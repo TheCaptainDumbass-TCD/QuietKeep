@@ -8,6 +8,7 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
     let preview = RwSignal::new(None::<ImportReport>);
     let notice = RwSignal::new(None::<String>);
     let pending_delete = RwSignal::new(None::<Host>);
+    let delete_typed = RwSignal::new(String::new());
     let probe = RwSignal::new(None::<(Host, HostKeyProbe)>);
     let access_key = RwSignal::new(None::<String>);
     let busy = RwSignal::new(None::<i64>);
@@ -206,10 +207,11 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                                         } else {
                                             view! {
                                                 <button class="btn small primary" disabled=move || busy.get() == Some(id)
-                                                    on:click=move |_| verify(h_ssh.clone())>"Verify key"</button>
+                                                    title="Checks the host's SSH fingerprint first, then installs QuietKeep's key"
+                                                    on:click=move |_| verify(h_ssh.clone())>"Set up access"</button>
                                             }.into_any()
                                         }}
-                                        <button class="btn small" on:click=move |_| pending_delete.set(Some(h.clone()))>
+                                        <button class="btn small subtle" on:click=move |_| { delete_typed.set(String::new()); pending_delete.set(Some(h.clone())); }>
                                             "Delete host"
                                         </button>
                                     </td>
@@ -291,10 +293,15 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
             <div class="modal-backdrop">
                 <div class="modal">
                     <h2>"Remove host"</h2>
-                    <p>{move || pending_delete.get().map(|h| format!("Remove {} from QuietKeep? Its history stays in the activity log.", h.spec.name))}</p>
+                    <p>{move || pending_delete.get().map(|h| format!("Remove {} from QuietKeep? Its trusted key and scan results are deleted. History stays in the activity log. Type the host name to confirm.", h.spec.name))}</p>
+                    <input class="search" type="text" autocomplete="off" placeholder="Host name"
+                        prop:value=move || delete_typed.get()
+                        on:input=move |ev| delete_typed.set(event_target_value(&ev)) />
                     <div class="modal-actions">
                         <button class="btn" on:click=move |_| pending_delete.set(None)>"Cancel"</button>
-                        <button class="btn danger" on:click=confirm_delete>"Remove"</button>
+                        <button class="btn danger"
+                            disabled=move || pending_delete.with(|h| h.as_ref().map(|h| h.spec.name != delete_typed.get()).unwrap_or(true))
+                            on:click=confirm_delete>"Delete host"</button>
                     </div>
                 </div>
             </div>

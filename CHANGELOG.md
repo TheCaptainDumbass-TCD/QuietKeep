@@ -2,6 +2,11 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.4.1
+
+- Hosts that are not set up yet show a Set up access button that verifies the host key and then installs QuietKeep's key
+- Deleting a host requires typing its name to confirm
+
 ## 0.4.0
 
 - Set up access can log in with your own SSH key through your ssh-agent, for hosts that only accept key logins. A password is only asked for as the sudo password when installing the sudoers rule
