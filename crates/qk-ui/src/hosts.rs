@@ -149,7 +149,7 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
             <button class="btn" on:click=export disabled=move || hosts.with(|h| h.is_empty())>
                 "Export CSV"
             </button>
-            <button class="btn" on:click=show_access_key>"Access key"</button>
+            <button class="btn" on:click=show_access_key>"Show public key"</button>
             <span class="muted">{move || notice.get().unwrap_or_default()}</span>
         </div>
 
@@ -256,7 +256,7 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
         <Show when=move || probe.with(|p| p.is_some())>
             <div class="modal-backdrop">
                 <div class="modal">
-                    <h2>"Verify host key"</h2>
+                    <h2>"Set up access"</h2>
                     {move || probe.get().map(|(h, p)| view! {
                         <p>{format!("{} ({}) presented this SSH host key:", h.spec.name, h.spec.address)}</p>
                         <p class="fingerprint mono">{format!("{} {}", p.algorithm, p.fingerprint).trim().to_string()}</p>
@@ -265,12 +265,16 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                                 "This key is different from the one you trusted before ({old}). Only continue if you rebuilt or reinstalled this host."
                             )}</p>
                         })}
-                        <p class="muted">"To confirm it, run this on the host and compare the fingerprint:"</p>
-                        <p class="fingerprint mono">"for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf \"$f\"; done"</p>
+                        <p>"Click Trust and set up access. QuietKeep then logs in once with your own SSH key and installs its key for you."</p>
+                        <details class="muted">
+                            <summary>"Optional: check the fingerprint yourself"</summary>
+                            <p>"Run this on the host and compare:"</p>
+                            <p class="fingerprint mono">"for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf \"$f\"; done"</p>
+                        </details>
                     })}
                     <div class="modal-actions">
                         <button class="btn" on:click=move |_| probe.set(None)>"Cancel"</button>
-                        <button class="btn primary" on:click=confirm_trust>"Trust this key"</button>
+                        <button class="btn primary" on:click=confirm_trust>"Trust and set up access"</button>
                     </div>
                 </div>
             </div>

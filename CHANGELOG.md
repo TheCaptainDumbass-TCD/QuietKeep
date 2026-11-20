@@ -2,6 +2,11 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.4.2
+
+- Set up access is one approval step: the fingerprint check no longer shows commands to run, and an optional detail covers checking it yourself
+- Toolbar Access key button renamed to Show public key
+
 ## 0.4.1
 
 - Hosts that are not set up yet show a Set up access button that verifies the host key and then installs QuietKeep's key
