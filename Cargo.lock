@@ -4177,11 +4177,11 @@ dependencies = [
 
 [[package]]
 name = "qk-auth"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "qk-collect"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "qk-core",
  "qk-ssh",
@@ -4192,7 +4192,7 @@ dependencies = [
 
 [[package]]
 name = "qk-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "csv",
  "serde",
@@ -4201,7 +4201,7 @@ dependencies = [
 
 [[package]]
 name = "qk-intel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4211,11 +4211,11 @@ dependencies = [
 
 [[package]]
 name = "qk-jobs"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "qk-ssh"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rand",
  "russh",
@@ -4225,7 +4225,7 @@ dependencies = [
 
 [[package]]
 name = "qk-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "qk-core",
  "rusqlite",
@@ -4235,7 +4235,7 @@ dependencies = [
 
 [[package]]
 name = "qk-ui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "js-sys",
  "leptos",
@@ -4257,7 +4257,7 @@ dependencies = [
 
 [[package]]
 name = "quietkeep"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "qk-collect",
  "qk-core",

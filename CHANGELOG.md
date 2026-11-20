@@ -2,7 +2,7 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
-## Unreleased
+## 0.3.0
 
 - Set up access button: enter a host password once and QuietKeep installs its key and optional sudoers rule. The password is never stored
 - Hosts logged in as root run patch and reboot commands without sudo
