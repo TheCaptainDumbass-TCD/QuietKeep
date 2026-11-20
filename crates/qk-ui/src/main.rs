@@ -1,6 +1,7 @@
 mod api;
 mod dashboard;
 mod hosts;
+mod docker;
 mod patches;
 mod settings;
 mod tauri;
@@ -11,6 +12,7 @@ use leptos::task::spawn_local;
 
 use dashboard::Dashboard;
 use hosts::HostsPanel;
+use docker::DockerPanel;
 use patches::PatchesPanel;
 use settings::SettingsPanel;
 use theme::{Theme, ThemeSwitcher};
@@ -105,6 +107,7 @@ fn App() -> impl IntoView {
                     Panel::Dashboard => view! { <Dashboard hosts activity /> }.into_any(),
                     Panel::Hosts => view! { <HostsPanel hosts refresh /> }.into_any(),
                     Panel::Patches => view! { <PatchesPanel refresh /> }.into_any(),
+                    Panel::Docker => view! { <DockerPanel refresh /> }.into_any(),
                     Panel::Settings => view! { <SettingsPanel refresh /> }.into_any(),
                     _ => view! {
                         <section class="card"><p class="muted">"This panel arrives in a later milestone."</p></section>

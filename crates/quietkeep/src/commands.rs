@@ -405,3 +405,129 @@ pub async fn run_action(app: AppHandle, id: i64, action: String) -> CmdResult<St
 fn update_tray(app: &AppHandle) {
     crate::scheduler::update_tray_tooltip(app);
 }
+
+#[tauri::command]
+pub fn docker_status(state: State<'_, AppState>) -> CmdResult<Vec<qk_store::DockerHost>> {
+    store(&state).docker_status().map_err(err)
+}
+
+async fn docker_one(app: &AppHandle, h: Host) -> CmdResult<()> {
+    let result = async {
+        let conn = connect_trusted(app, &h).await?;
+        let r = async {
+            let mut containers = qk_collect::docker::inventory(&conn).await?;
+            qk_collect::docker::check_updates(&conn, &mut containers).await?;
+            Ok::<_, qk_ssh::SshError>(containers)
+        }
+        .await
+        .map_err(err);
+        let _ = conn.close().await;
+        r
+    }
+    .await;
+    let state = app.state::<AppState>();
+    let mut s = store(&state);
+    match result {
+        Ok(containers) => {
+            let rows: Vec<qk_store::ContainerRow> = containers
+                .into_iter()
+                .map(|c| qk_store::ContainerRow {
+                    name: c.name,
+                    image: c.image,
+                    state: c.state,
+                    status: c.status,
+                    project: c.project,
+                    service: c.service,
+                    config_file: c.config_file,
+                    update_available: c.update_available,
+                })
+                .collect();
+            let updates = rows.iter().filter(|c| c.update_available == Some(true)).count();
+            s.record_docker(h.id, &rows).map_err(err)?;
+            s.log_activity(
+                "docker.scan",
+                Some(h.id),
+                &format!("Docker on {}: {} containers, {updates} image updates", h.spec.name, rows.len()),
+            )
+            .map_err(err)?;
+            Ok(())
+        }
+        Err(e) => {
+            s.record_docker_error(h.id, &e).map_err(err)?;
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn scan_docker(app: AppHandle, id: i64) -> CmdResult<bool> {
+    let h = host(&app.state::<AppState>(), id)?;
+    docker_one(&app, h).await.map(|_| true)
+}
+
+/// Scans Docker hosts whose key is trusted. Read-only: nothing is pulled or restarted.
+#[tauri::command]
+pub async fn scan_docker_all(app: AppHandle) -> CmdResult<ScanSummary> {
+    let hosts = store(&app.state::<AppState>()).list_hosts().map_err(err)?;
+    let (trusted, untrusted): (Vec<Host>, Vec<Host>) =
+        hosts.into_iter().filter(|h| h.spec.has_docker).partition(|h| h.host_key.is_some());
+    let tasks: Vec<_> = trusted
+        .into_iter()
+        .map(|h| {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { docker_one(&app, h).await.is_ok() })
+        })
+        .collect();
+    let mut summary = ScanSummary { scanned: 0, failed: 0, skipped: untrusted.len() as u32 };
+    for task in tasks {
+        if task.await.unwrap_or(false) {
+            summary.scanned += 1;
+        } else {
+            summary.failed += 1;
+        }
+    }
+    Ok(summary)
+}
+
+fn compose_file(state: &State<'_, AppState>, id: i64, project: &str) -> CmdResult<String> {
+    store(state)
+        .docker_status()
+        .map_err(err)?
+        .into_iter()
+        .find(|h| h.host_id == id)
+        .and_then(|h| h.containers.into_iter().find(|c| c.project.as_deref() == Some(project)))
+        .and_then(|c| c.config_file)
+        .ok_or_else(|| "No compose file is known for this project. Scan the host again.".into())
+}
+
+/// The exact commands an update runs, shown to the user before they confirm.
+#[tauri::command]
+pub fn compose_update_preview(state: State<'_, AppState>, id: i64, project: String) -> CmdResult<Vec<String>> {
+    let file = compose_file(&state, id, &project)?;
+    Ok(qk_collect::docker::compose_update_commands(&file).iter().map(|c| c.as_str().to_string()).collect())
+}
+
+#[tauri::command]
+pub async fn update_compose(app: AppHandle, id: i64, project: String) -> CmdResult<String> {
+    let h = host(&app.state::<AppState>(), id)?;
+    let file = compose_file(&app.state::<AppState>(), id, &project)?;
+    let name = h.spec.name.clone();
+    let conn = connect_trusted(&app, &h).await?;
+    let result = qk_collect::docker::update_compose(&conn, &file).await;
+    let _ = conn.close().await;
+    let outcome = match result {
+        Ok(r) if r.success => Ok(format!("Updated {project} on {name}.")),
+        Ok(r) => Err(format!(
+            "Updating {project} on {name} failed: {}",
+            r.output_tail.lines().last().unwrap_or("")
+        )),
+        Err(e) => Err(format!("Updating {project} on {name} failed: {e}")),
+    };
+    let msg = match &outcome {
+        Ok(m) | Err(m) => m.clone(),
+    };
+    let kind = if outcome.is_ok() { "docker.update" } else { "docker.update_failed" };
+    store(&app.state::<AppState>()).log_activity(kind, Some(id), &msg).map_err(err)?;
+    let _ = docker_one(&app, h).await;
+    outcome
+}

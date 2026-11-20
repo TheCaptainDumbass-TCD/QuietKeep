@@ -183,3 +183,4 @@ p.small { font-size: 12px; margin: 4px 0 12px; }
 .field { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
 .field select { padding: 6px 8px; border-radius: 6px; background: rgba(127, 127, 127, 0.12); color: inherit;
   border: 1px solid rgba(127, 127, 127, 0.3); }
+.spacer { flex: 1; }

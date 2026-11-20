@@ -191,3 +191,51 @@ pub async fn check_privileged(id: i64, action: &'static str) -> Result<Privilege
 pub async fn run_action(id: i64, action: &'static str) -> Result<String, String> {
     invoke("run_action", args(&ActionArg { id, action })).await
 }
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ContainerRow {
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    pub status: String,
+    pub project: Option<String>,
+    pub service: Option<String>,
+    pub config_file: Option<String>,
+    pub update_available: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct DockerHost {
+    pub host_id: i64,
+    pub name: String,
+    pub host_key_trusted: bool,
+    pub docker_scan_at: Option<i64>,
+    pub docker_error: Option<String>,
+    pub containers: Vec<ContainerRow>,
+}
+
+#[derive(Serialize)]
+struct ProjectArg {
+    id: i64,
+    project: String,
+}
+
+pub async fn docker_status() -> Result<Vec<DockerHost>, String> {
+    invoke("docker_status", JsValue::UNDEFINED).await
+}
+
+pub async fn scan_docker(id: i64) -> Result<bool, String> {
+    invoke("scan_docker", args(&IdArg { id })).await
+}
+
+pub async fn scan_docker_all() -> Result<ScanSummary, String> {
+    invoke("scan_docker_all", JsValue::UNDEFINED).await
+}
+
+pub async fn compose_update_preview(id: i64, project: String) -> Result<Vec<String>, String> {
+    invoke("compose_update_preview", args(&ProjectArg { id, project })).await
+}
+
+pub async fn update_compose(id: i64, project: String) -> Result<String, String> {
+    invoke("update_compose", args(&ProjectArg { id, project })).await
+}

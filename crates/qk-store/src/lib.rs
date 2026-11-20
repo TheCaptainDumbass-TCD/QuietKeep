@@ -11,6 +11,7 @@ use thiserror::Error;
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_init.sql"),
     include_str!("migrations/0002_scans.sql"),
+    include_str!("migrations/0003_docker.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -50,6 +51,28 @@ pub struct PatchStatus {
     pub security: u32,
     pub reboot_required: bool,
     pub scan_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct ContainerRow {
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    pub status: String,
+    pub project: Option<String>,
+    pub service: Option<String>,
+    pub config_file: Option<String>,
+    pub update_available: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DockerHost {
+    pub host_id: i64,
+    pub name: String,
+    pub host_key_trusted: bool,
+    pub docker_scan_at: Option<i64>,
+    pub docker_error: Option<String>,
+    pub containers: Vec<ContainerRow>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -214,6 +237,78 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
+    }
+
+pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM containers WHERE host_id = ?1", [id])?;
+        {
+            let mut ins = tx.prepare(
+                "INSERT OR REPLACE INTO containers
+                 (host_id, name, image, state, status, project, service, config_file, update_available)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )?;
+            for c in containers {
+                ins.execute(params![
+                    id, c.name, c.image, c.state, c.status, c.project, c.service, c.config_file, c.update_available
+                ])?;
+            }
+        }
+        tx.execute(
+            "UPDATE hosts SET docker_scan_at = unixepoch(), docker_error = NULL WHERE id = ?1",
+            [id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn record_docker_error(&mut self, id: i64, message: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE hosts SET docker_scan_at = unixepoch(), docker_error = ?1 WHERE id = ?2",
+            params![message, id],
+        )?;
+        Ok(())
+    }
+
+    /// Hosts marked as Docker hosts with their containers from the last scan.
+    pub fn docker_status(&self) -> Result<Vec<DockerHost>> {
+        let mut hosts_stmt = self.conn.prepare(
+            "SELECT id, name, host_key IS NOT NULL, docker_scan_at, docker_error
+             FROM hosts WHERE has_docker = 1 ORDER BY name",
+        )?;
+        let mut hosts: Vec<DockerHost> = hosts_stmt
+            .query_map([], |r| {
+                Ok(DockerHost {
+                    host_id: r.get(0)?,
+                    name: r.get(1)?,
+                    host_key_trusted: r.get(2)?,
+                    docker_scan_at: r.get(3)?,
+                    docker_error: r.get(4)?,
+                    containers: Vec::new(),
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        let mut c_stmt = self.conn.prepare(
+            "SELECT name, image, state, status, project, service, config_file, update_available
+             FROM containers WHERE host_id = ?1 ORDER BY project IS NULL, project, name",
+        )?;
+        for h in &mut hosts {
+            h.containers = c_stmt
+                .query_map([h.host_id], |r| {
+                    Ok(ContainerRow {
+                        name: r.get(0)?,
+                        image: r.get(1)?,
+                        state: r.get(2)?,
+                        status: r.get(3)?,
+                        project: r.get(4)?,
+                        service: r.get(5)?,
+                        config_file: r.get(6)?,
+                        update_available: r.get(7)?,
+                    })
+                })?
+                .collect::<std::result::Result<_, _>>()?;
+        }
+        Ok(hosts)
     }
 
     pub fn log_activity(&self, kind: &str, host_id: Option<i64>, message: &str) -> Result<()> {
@@ -445,5 +540,35 @@ mod tests {
         store.set_setting("scan.interval_minutes", "60").unwrap();
         store.set_setting("scan.interval_minutes", "360").unwrap();
         assert_eq!(store.get_setting("scan.interval_minutes").unwrap().as_deref(), Some("360"));
+    }
+
+    #[test]
+    fn records_docker() {
+        let mut store = Store::open_in_memory().unwrap();
+        let spec = HostSpec {
+            name: "dock".into(),
+            address: "198.51.100.7".into(),
+            username: "admin".into(),
+            os_type: OsType::Apt,
+            is_patch_target: true,
+            has_docker: true,
+        };
+        let id = store.add_host(&spec).unwrap();
+        let c = ContainerRow {
+            name: "web-web-1".into(),
+            image: "nginx:alpine".into(),
+            state: "running".into(),
+            status: "Up".into(),
+            project: Some("web".into()),
+            service: Some("web".into()),
+            config_file: Some("/srv/web/compose.yaml".into()),
+            update_available: Some(true),
+        };
+        store.record_docker(id, &[c.clone()]).unwrap();
+        let d = &store.docker_status().unwrap()[0];
+        assert_eq!(d.containers, vec![c]);
+        assert!(d.docker_scan_at.is_some());
+        store.record_docker_error(id, "docker not found").unwrap();
+        assert_eq!(store.docker_status().unwrap()[0].docker_error.as_deref(), Some("docker not found"));
     }
 }

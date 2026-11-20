@@ -11,7 +11,7 @@ struct ActionDialog {
     check: PrivilegeCheck,
 }
 
-fn ago(ts: Option<i64>) -> String {
+pub(crate) fn ago(ts: Option<i64>) -> String {
     let Some(ts) = ts else { return "Never".into() };
     let secs = ((js_sys::Date::now() / 1000.0) as i64 - ts).max(0);
     match secs {

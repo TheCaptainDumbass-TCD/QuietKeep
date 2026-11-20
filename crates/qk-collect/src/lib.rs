@@ -169,7 +169,7 @@ pub async fn run_action(conn: &Connection, os: OsType, action: Action) -> Result
     Ok(ActionReport { success: true, output_tail: tail(&log) })
 }
 
-fn tail(bytes: &[u8]) -> String {
+pub(crate) fn tail(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let start = text.len().saturating_sub(TAIL_BYTES);
     let start = (start..text.len()).find(|i| text.is_char_boundary(*i)).unwrap_or(text.len());
@@ -201,3 +201,4 @@ mod tests {
         );
     }
 }
+pub mod docker;
