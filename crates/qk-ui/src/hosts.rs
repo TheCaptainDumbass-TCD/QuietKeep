@@ -14,12 +14,14 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
     let setup = RwSignal::new(None::<(Host, api::AccessPreview)>);
     let setup_password = RwSignal::new(String::new());
     let setup_sudoers = RwSignal::new(true);
+    let setup_agent = RwSignal::new(true);
     let setup_busy = RwSignal::new(false);
     let setup_error = RwSignal::new(None::<String>);
     let load_setup = move |h: Host| {
         let sudoers = setup_sudoers.get_untracked();
+        let agent = setup_agent.get_untracked();
         spawn_local(async move {
-            match api::setup_access_preview(h.id, sudoers).await {
+            match api::setup_access_preview(h.id, agent, sudoers).await {
                 Ok(p) => setup.set(Some((h, p))),
                 Err(e) => notice.set(Some(format!("{}: {e}", h.spec.name))),
             }
@@ -33,14 +35,15 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
     let run_setup = move |_| {
         let Some((h, _)) = setup.get_untracked() else { return };
         let password = setup_password.get_untracked();
-        if password.is_empty() {
+        let agent = setup_agent.get_untracked();
+        if password.is_empty() && !agent {
             setup_error.set(Some("Enter the password for this host.".into()));
             return;
         }
         setup_busy.set(true);
         setup_error.set(None);
         spawn_local(async move {
-            let result = api::setup_access(h.id, password, setup_sudoers.get_untracked()).await;
+            let result = api::setup_access(h.id, agent, password, setup_sudoers.get_untracked()).await;
             setup_password.set(String::new());
             setup_busy.set(false);
             match result {
@@ -303,11 +306,27 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                         let is_root = h.spec.username == "root";
                         view! {
                             <h2>{format!("Set up access on {}", h.spec.name)}</h2>
-                            <p>{format!("Enter the SSH password for {}@{}. QuietKeep will:", h.spec.username, h.spec.address)}</p>
+                            <div class="field">
+                                <span>"Log in with"</span>
+                                <label class="check">
+                                    <input type="radio" name="setup-method" prop:checked=move || setup_agent.get()
+                                        on:change={let h = h.clone(); move |_| { setup_agent.set(true); load_setup(h.clone()); }} />
+                                    "My SSH key (ssh-agent)"
+                                </label>
+                                <label class="check">
+                                    <input type="radio" name="setup-method" prop:checked=move || !setup_agent.get()
+                                        on:change={let h = h.clone(); move |_| { setup_agent.set(false); load_setup(h.clone()); }} />
+                                    "Password"
+                                </label>
+                            </div>
+                            <p>{format!("For {}@{}, QuietKeep will:", h.spec.username, h.spec.address)}</p>
                             <ol class="steps">{p.steps.iter().map(|s| view! { <li>{s.clone()}</li> }).collect_view()}</ol>
-                            <input class="search" type="password" placeholder="Password" autocomplete="off"
-                                prop:value=move || setup_password.get()
-                                on:input=move |ev| setup_password.set(event_target_value(&ev)) />
+                            <Show when=move || !setup_agent.get() || (setup_sudoers.get() && !is_root)>
+                                <input class="search" type="password" autocomplete="off"
+                                    placeholder=move || if setup_agent.get() { "sudo password (leave empty if sudo needs none)" } else { "SSH password" }
+                                    prop:value=move || setup_password.get()
+                                    on:input=move |ev| setup_password.set(event_target_value(&ev)) />
+                            </Show>
                             <Show when=move || !is_root>
                                 <label class="check">
                                     <input type="checkbox" prop:checked=move || setup_sudoers.get()

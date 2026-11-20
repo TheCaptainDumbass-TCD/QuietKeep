@@ -22,3 +22,4 @@ serde = { version = "1", features = ["derive"] }
 qk-collect = { path = "../qk-collect" }
 tokio = { version = "1", features = ["time"] }
 qk-intel = { path = "../qk-intel" }
+qk-auth = { path = "../qk-auth" }

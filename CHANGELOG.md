@@ -2,8 +2,11 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
-## Unreleased
+## 0.4.0
 
+- Set up access can log in with your own SSH key through your ssh-agent, for hosts that only accept key logins. A password is only asked for as the sudo password when installing the sudoers rule
+- QuietKeep's SSH key is encrypted, with its passphrase kept in the desktop keyring (GNOME Keyring or KWallet). Existing keys are encrypted in place on first start
+- Shows a "QuietKeep was updated" banner with a Restart button after the package is upgraded while the app is running
 - Panels section in Settings: show, hide and reorder sidebar panels
 
 ## 0.3.1

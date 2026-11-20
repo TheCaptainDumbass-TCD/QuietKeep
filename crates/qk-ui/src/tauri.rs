@@ -24,6 +24,7 @@ pub struct AppInfo {
     pub platform: String,
     pub data_dir: String,
     pub schema_version: i64,
+    pub key_protection: String,
 }
 
 pub async fn app_info() -> Result<AppInfo, String> {

@@ -86,6 +86,17 @@ fn App() -> impl IntoView {
         }
     });
 
+    let updated = RwSignal::new(false);
+    let check_update = move || {
+        spawn_local(async move {
+            if let Ok(true) = api::update_pending().await {
+                updated.set(true);
+            }
+        })
+    };
+    check_update();
+    set_interval(check_update, std::time::Duration::from_secs(60));
+
     let hosts = RwSignal::new(Vec::new());
     let activity = RwSignal::new(Vec::new());
     let refresh = Callback::new(move |_| {
@@ -129,6 +140,12 @@ fn App() -> impl IntoView {
                 </div>
             </aside>
             <main class="content">
+                <Show when=move || updated.get()>
+                    <div class="banner">
+                        <span>"QuietKeep was updated. Restart to use the new version."</span>
+                        <button class="btn small primary" on:click=move |_| spawn_local(async { let _ = api::restart_app().await; })>"Restart"</button>
+                    </div>
+                </Show>
                 <h1>{move || panel.get().label()}</h1>
                 {move || match panel.get() {
                     Panel::Dashboard => view! { <Dashboard hosts activity /> }.into_any(),

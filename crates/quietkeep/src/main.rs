@@ -74,10 +74,32 @@ fn main() {
                 std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
             }
             let store = Store::open(&dir.join("quietkeep.db"))?;
-            let identity = qk_ssh::load_or_create_identity(&dir.join("identity_ed25519"))?;
+            // The keyring is queried on its own thread so a slow or prompting keyring cannot
+            // stall the GTK main thread.
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(qk_auth::passphrase());
+            });
+            let passphrase = match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(Ok(p)) => Some(p),
+                Ok(Err(e)) => {
+                    eprintln!("quietkeep: {e}; the SSH key stays unencrypted with mode 0600");
+                    None
+                }
+                Err(_) => {
+                    eprintln!("quietkeep: the desktop keyring did not answer within 30 seconds");
+                    None
+                }
+            };
+            let identity = qk_ssh::load_or_create_identity(&dir.join("identity_ed25519"), passphrase.as_deref())?;
             app.manage(AppState {
                 store: Mutex::new(store),
-                identity: std::sync::Arc::new(identity),
+                key_protection: if identity.encrypted {
+                    "Encrypted, passphrase in the desktop keyring".into()
+                } else {
+                    "Not encrypted (no desktop keyring found). File readable only by you".into()
+                },
+                identity: std::sync::Arc::new(identity.key),
                 pending_keys: Mutex::new(Default::default()),
             });
             build_tray(app.handle())?;
@@ -126,6 +148,8 @@ fn main() {
             commands::metrics,
             commands::setup_access_preview,
             commands::setup_access,
+            commands::update_pending,
+            commands::restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start QuietKeep");

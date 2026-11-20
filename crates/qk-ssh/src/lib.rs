@@ -22,6 +22,8 @@ pub enum SshError {
     CertificateUnsupported,
     #[error("authentication failed for user '{0}'")]
     AuthFailed(String),
+    #[error("SSH agent: {0}")]
+    Agent(String),
     #[error("connection timed out")]
     Timeout,
     #[error("command output exceeded {MAX_OUTPUT} bytes")]
@@ -109,6 +111,7 @@ impl Output {
 enum Auth {
     Key(Arc<PrivateKey>),
     Password(String),
+    Agent,
 }
 
 pub async fn connect(
@@ -129,6 +132,12 @@ pub async fn connect_with_password(
     timeout: Duration,
 ) -> Result<Connection> {
     connect_inner(target, Auth::Password(password), TrustPolicy::Pinned(pinned_fingerprint), timeout).await
+}
+
+/// One-time login with the user's own keys through their running ssh-agent (SSH_AUTH_SOCK),
+/// used only to install QuietKeep's key. The host key must already be pinned.
+pub async fn connect_with_agent(target: &Target, pinned_fingerprint: String, timeout: Duration) -> Result<Connection> {
+    connect_inner(target, Auth::Agent, TrustPolicy::Pinned(pinned_fingerprint), timeout).await
 }
 
 async fn connect_inner(target: &Target, auth: Auth, policy: TrustPolicy, timeout: Duration) -> Result<Connection> {
@@ -171,12 +180,36 @@ async fn connect_inner(target: &Target, auth: Auth, policy: TrustPolicy, timeout
                 handle.authenticate_publickey(&target.username, PrivateKeyWithHashAlg::new(identity, hash)),
             )
             .await
+            .map_err(|_| SshError::Timeout)??
         }
-        Auth::Password(password) => {
-            tokio::time::timeout(timeout, handle.authenticate_password(&target.username, password)).await
+        Auth::Password(password) => tokio::time::timeout(timeout, handle.authenticate_password(&target.username, password))
+            .await
+            .map_err(|_| SshError::Timeout)??,
+        Auth::Agent => {
+            let mut agent = russh::keys::agent::client::AgentClient::connect_env()
+                .await
+                .map_err(|e| SshError::Agent(format!("no running ssh-agent found ({e})")))?;
+            let identities = agent.request_identities().await.map_err(|e| SshError::Agent(e.to_string()))?;
+            let hash = handle.best_supported_rsa_hash().await?.flatten();
+            let mut last = None;
+            for identity in identities {
+                let russh::keys::agent::AgentIdentity::PublicKey { key, .. } = identity else { continue };
+                let r = tokio::time::timeout(
+                    timeout,
+                    handle.authenticate_publickey_with(&target.username, key, hash, &mut agent),
+                )
+                .await
+                .map_err(|_| SshError::Timeout)?
+                .map_err(|e| SshError::Agent(e.to_string()))?;
+                let ok = r.success();
+                last = Some(r);
+                if ok {
+                    break;
+                }
+            }
+            last.ok_or_else(|| SshError::Agent("the ssh-agent has no keys loaded".into()))?
         }
-    }
-    .map_err(|_| SshError::Timeout)??;
+    };
     if !auth.success() {
         return Err(SshError::AuthFailed(target.username.clone()));
     }
@@ -270,15 +303,52 @@ pub fn generate_identity() -> Result<PrivateKey> {
         .map_err(|e| SshError::KeyGen(e.to_string()))
 }
 
-/// Loads QuietKeep's own SSH identity, creating it with mode 0600 on first use.
-pub fn load_or_create_identity(path: &std::path::Path) -> Result<PrivateKey> {
+pub struct LoadedIdentity {
+    pub key: PrivateKey,
+    /// True when the key file on disk is encrypted with the keyring passphrase.
+    pub encrypted: bool,
+}
+
+/// Loads QuietKeep's own SSH identity, creating it with mode 0600 on first use. With a
+/// passphrase the file is stored encrypted, and an existing plaintext key is encrypted in place.
+pub fn load_or_create_identity(path: &std::path::Path, passphrase: Option<&str>) -> Result<LoadedIdentity> {
+    let keygen = |e: russh::keys::ssh_key::Error| SshError::KeyGen(e.to_string());
     if path.exists() {
-        return Ok(russh::keys::load_secret_key(path, None)?);
+        let stored = PrivateKey::from_openssh(std::fs::read_to_string(path)?).map_err(keygen)?;
+        if stored.is_encrypted() {
+            let Some(pass) = passphrase else {
+                return Err(SshError::KeyGen(
+                    "QuietKeep's SSH key is encrypted, but the desktop keyring is locked or unavailable".into(),
+                ));
+            };
+            let key = stored.decrypt(pass).map_err(keygen)?;
+            return Ok(LoadedIdentity { key, encrypted: true });
+        }
+        if let Some(pass) = passphrase {
+            write_key_file(path, &stored.encrypt(&mut rand::rng(), pass).map_err(keygen)?, true)?;
+            return Ok(LoadedIdentity { key: stored, encrypted: true });
+        }
+        return Ok(LoadedIdentity { key: stored, encrypted: false });
     }
     let key = generate_identity()?;
+    match passphrase {
+        Some(pass) => write_key_file(path, &key.encrypt(&mut rand::rng(), pass).map_err(keygen)?, false)?,
+        None => write_key_file(path, &key, false)?,
+    }
+    Ok(LoadedIdentity { key, encrypted: passphrase.is_some() })
+}
+
+/// Writes an OpenSSH private key with mode 0600. Replacing goes through a temporary file and
+/// rename so a crash never leaves a truncated key.
+fn write_key_file(path: &std::path::Path, key: &PrivateKey, replace: bool) -> Result<()> {
+    use std::io::Write;
     let pem = key
         .to_openssh(russh::keys::ssh_key::LineEnding::LF)
         .map_err(|e| SshError::KeyGen(e.to_string()))?;
+    let target = if replace { path.with_extension("tmp") } else { path.to_path_buf() };
+    if replace {
+        let _ = std::fs::remove_file(&target);
+    }
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -286,9 +356,13 @@ pub fn load_or_create_identity(path: &std::path::Path) -> Result<PrivateKey> {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    use std::io::Write;
-    opts.open(path)?.write_all(pem.as_bytes())?;
-    Ok(key)
+    let mut file = opts.open(&target)?;
+    file.write_all(pem.as_bytes())?;
+    file.sync_all()?;
+    if replace {
+        std::fs::rename(&target, path)?;
+    }
+    Ok(())
 }
 
 /// The identity's public key as an `authorized_keys` line.
@@ -307,10 +381,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("id");
         let _ = std::fs::remove_file(&path);
-        let a = load_or_create_identity(&path).unwrap();
-        let b = load_or_create_identity(&path).unwrap();
+        let a = load_or_create_identity(&path, None).unwrap().key;
+        let b = load_or_create_identity(&path, None).unwrap().key;
         assert_eq!(public_key_openssh(&a).unwrap(), public_key_openssh(&b).unwrap());
         assert!(public_key_openssh(&a).unwrap().starts_with("ssh-ed25519 "));
+        // Migrating a plaintext key encrypts it in place and keeps the same identity.
+        let c = load_or_create_identity(&path, Some("pass-1")).unwrap();
+        assert!(c.encrypted);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("BEGIN OPENSSH PRIVATE KEY"));
+        assert!(PrivateKey::from_openssh(std::fs::read_to_string(&path).unwrap()).unwrap().is_encrypted());
+        assert_eq!(public_key_openssh(&c.key).unwrap(), public_key_openssh(&a).unwrap());
+        let d = load_or_create_identity(&path, Some("pass-1")).unwrap();
+        assert_eq!(public_key_openssh(&d.key).unwrap(), public_key_openssh(&a).unwrap());
+        assert!(load_or_create_identity(&path, None).is_err());
+        assert!(load_or_create_identity(&path, Some("wrong")).is_err());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -74,6 +74,7 @@ pub fn SettingsPanel(refresh: Callback<()>) -> impl IntoView {
                         <tr><th>"App ID"</th><td class="mono">{i.identifier}</td></tr>
                         <tr><th>"Data folder"</th><td class="mono">{i.data_dir}</td></tr>
                         <tr><th>"Database schema"</th><td class="mono">{i.schema_version.to_string()}</td></tr>
+                        <tr><th>"SSH key"</th><td>{i.key_protection}</td></tr>
                         <tr><th>"License"</th><td>"GPL-3.0-or-later. Copyright (C) 2026 Dennis Ayotte"</td></tr>
                     </tbody>
                 </table>

@@ -15,6 +15,7 @@ use tauri_plugin_dialog::{DialogExt, FilePath};
 pub struct AppState {
     pub store: Mutex<Store>,
     pub identity: Arc<PrivateKey>,
+    pub key_protection: String,
     /// Host keys seen by `probe_host_key` that the user has not yet approved.
     pub pending_keys: Mutex<HashMap<i64, String>>,
 }
@@ -40,6 +41,7 @@ pub struct AppInfo {
     platform: String,
     data_dir: String,
     schema_version: i64,
+    key_protection: String,
 }
 
 #[tauri::command]
@@ -52,6 +54,7 @@ pub fn app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
         platform: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
         data_dir: app.path().app_data_dir().map(|p| p.display().to_string()).unwrap_or_default(),
         schema_version: store(&state).schema_version().unwrap_or(0),
+        key_protection: state.key_protection.clone(),
     }
 }
 
@@ -656,21 +659,32 @@ pub struct AccessPreview {
 }
 
 #[tauri::command]
-pub fn setup_access_preview(state: State<'_, AppState>, id: i64, install_sudoers: bool) -> CmdResult<AccessPreview> {
+pub fn setup_access_preview(
+    state: State<'_, AppState>,
+    id: i64,
+    use_agent: bool,
+    install_sudoers: bool,
+) -> CmdResult<AccessPreview> {
     let h = host(&state, id)?;
     let as_root = h.spec.username == "root";
     let install_sudoers = install_sudoers && !as_root;
     Ok(AccessPreview {
-        steps: qk_collect::access::describe(install_sudoers, as_root),
+        steps: qk_collect::access::describe(use_agent, install_sudoers, as_root),
         public_key: qk_ssh::public_key_openssh(&state.identity).map_err(err)?,
         rule: install_sudoers.then(|| qk_collect::sudoers_rule(&h.spec.username, h.spec.os_type)),
     })
 }
 
-/// Logs in once with the user's password to install QuietKeep's key (and optionally the sudoers
-/// rule). Requires a trusted host key. The password is dropped when this returns.
+/// Logs in once with the user's ssh-agent or password to install QuietKeep's key (and optionally
+/// the sudoers rule). Requires a trusted host key. The password is dropped when this returns.
 #[tauri::command]
-pub async fn setup_access(app: AppHandle, id: i64, password: String, install_sudoers: bool) -> CmdResult<String> {
+pub async fn setup_access(
+    app: AppHandle,
+    id: i64,
+    use_agent: bool,
+    password: String,
+    install_sudoers: bool,
+) -> CmdResult<String> {
     let state = app.state::<AppState>();
     let h = host(&state, id)?;
     let Some(fp) = h.host_key.clone() else {
@@ -679,12 +693,18 @@ pub async fn setup_access(app: AppHandle, id: i64, password: String, install_sud
     let name = h.spec.name.clone();
     let as_root = h.spec.username == "root";
     let public_key = qk_ssh::public_key_openssh(&state.identity).map_err(err)?;
-    let conn = qk_ssh::connect_with_password(&target(&h), password.clone(), fp, SSH_TIMEOUT)
-        .await
-        .map_err(|e| match e {
-            SshError::AuthFailed(user) => format!("The password for {user} was refused, or password login is disabled on {name}."),
-            other => other.to_string(),
-        })?;
+    let connected = if use_agent {
+        qk_ssh::connect_with_agent(&target(&h), fp, SSH_TIMEOUT).await
+    } else {
+        qk_ssh::connect_with_password(&target(&h), password.clone(), fp, SSH_TIMEOUT).await
+    };
+    let conn = connected.map_err(|e| match e {
+        SshError::AuthFailed(user) if use_agent => {
+            format!("{name} refused every key in your ssh-agent for {user}. Check that your own key can log in to this host.")
+        }
+        SshError::AuthFailed(user) => format!("The password for {user} was refused, or password login is disabled on {name}."),
+        other => other.to_string(),
+    })?;
     let result = async {
         let key = qk_collect::access::install_key(&conn, &public_key).await.map_err(err)?;
         if !key.success {
@@ -722,4 +742,18 @@ pub async fn setup_access(app: AppHandle, id: i64, password: String, install_sud
             Err(e)
         }
     }
+}
+
+/// True when the package was upgraded while this copy kept running: the executable on disk
+/// was replaced, so `/proc/self/exe` points at a deleted file.
+#[tauri::command]
+pub fn update_pending() -> bool {
+    std::fs::read_link("/proc/self/exe")
+        .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn restart_app(app: AppHandle) {
+    app.restart();
 }

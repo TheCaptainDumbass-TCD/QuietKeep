@@ -24,16 +24,25 @@ pub fn install_sudoers_command(rule: &str, as_root: bool) -> Command {
 }
 
 /// Plain-language steps shown to the user before they confirm.
-pub fn describe(install_sudoers: bool, as_root: bool) -> Vec<String> {
+pub fn describe(use_agent: bool, install_sudoers: bool, as_root: bool) -> Vec<String> {
+    let login = if use_agent {
+        "Log in once with your own SSH key through your ssh-agent. Your key never leaves the agent."
+    } else {
+        "Log in once with the password you enter. The password is not saved."
+    };
     let mut steps = vec![
-        "Log in once with the password you enter. The password is not saved.".to_string(),
+        login.to_string(),
         "Create ~/.ssh with mode 700 and authorized_keys with mode 600 if needed.".to_string(),
         "Add QuietKeep's public key to ~/.ssh/authorized_keys if it is not already there.".to_string(),
     ];
     if install_sudoers {
         steps.push(format!(
             "{}check the rule below with visudo and install it as {SUDOERS_PATH} (mode 440).",
-            if as_root { "As root, " } else { "Using sudo with the same password, " }
+            match (as_root, use_agent) {
+                (true, _) => "As root, ",
+                (false, true) => "Using sudo with the sudo password you enter (not saved), ",
+                (false, false) => "Using sudo with the same password, ",
+            }
         ));
     }
     steps

@@ -337,23 +337,33 @@ pub struct AccessPreview {
     pub rule: Option<String>,
 }
 
-pub async fn setup_access_preview(id: i64, install_sudoers: bool) -> Result<AccessPreview, String> {
+pub async fn setup_access_preview(id: i64, use_agent: bool, install_sudoers: bool) -> Result<AccessPreview, String> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct A {
         id: i64,
+        use_agent: bool,
         install_sudoers: bool,
     }
-    invoke("setup_access_preview", args(&A { id, install_sudoers })).await
+    invoke("setup_access_preview", args(&A { id, use_agent, install_sudoers })).await
 }
 
-pub async fn setup_access(id: i64, password: String, install_sudoers: bool) -> Result<String, String> {
+pub async fn setup_access(id: i64, use_agent: bool, password: String, install_sudoers: bool) -> Result<String, String> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct A {
         id: i64,
+        use_agent: bool,
         password: String,
         install_sudoers: bool,
     }
-    invoke("setup_access", args(&A { id, password, install_sudoers })).await
+    invoke("setup_access", args(&A { id, use_agent, password, install_sudoers })).await
+}
+
+pub async fn update_pending() -> Result<bool, String> {
+    invoke("update_pending", JsValue::UNDEFINED).await
+}
+
+pub async fn restart_app() -> Result<(), String> {
+    invoke("restart_app", JsValue::UNDEFINED).await
 }
