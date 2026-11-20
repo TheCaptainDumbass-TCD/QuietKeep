@@ -143,6 +143,7 @@ fn main() {
             commands::update_compose,
             commands::kev_state,
             commands::kev_set_allowed,
+            commands::open_cve_page,
             commands::registry_state,
             commands::registry_set_allowed,
             commands::docker_tag_preview,

@@ -13,6 +13,7 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
     let notice = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     let asking = RwSignal::new(false);
+    let selected = RwSignal::new(None::<Vulnerability>);
 
     let run_search = move || {
         let filter = KevFilter {
@@ -116,7 +117,10 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
             <thead><tr><th>"CVE"</th><th>"Vendor"</th><th>"Product"</th><th>"Name"</th><th>"Added"</th><th>"Due"</th><th>"Ransomware"</th></tr></thead>
             <tbody>
                 <For each=move || results.get() key=|v| v.cve_id.clone() let:v>
-                    <tr title=v.short_description.clone()>
+                    <tr class="clickable" title="Click for details" on:click={
+                        let v = v.clone();
+                        move |_| selected.set(Some(v.clone()))
+                    }>
                         <td class="mono">{v.cve_id.clone()}</td>
                         <td>{v.vendor_project.clone()}</td>
                         <td>{v.product.clone()}</td>
@@ -132,6 +136,39 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                 </For>
             </tbody>
         </table>
+
+        {move || selected.get().map(|v| {
+            let id = v.cve_id.clone();
+            let open = move |site: &'static str| {
+                let cve = id.clone();
+                move |_| {
+                    let cve = cve.clone();
+                    spawn_local(async move {
+                        if let Err(e) = api::open_cve_page(cve, site).await {
+                            notice.set(Some(e));
+                        }
+                    })
+                }
+            };
+            view! {
+                <div class="modal-backdrop" on:click=move |_| selected.set(None)>
+                    <div class="modal wide" on:click=|ev| ev.stop_propagation()>
+                        <h2 class="mono">{v.cve_id.clone()}</h2>
+                        <p><strong>{v.vulnerability_name.clone()}</strong></p>
+                        <p class="muted">{format!("{} {}", v.vendor_project, v.product)}</p>
+                        <p>{v.short_description.clone()}</p>
+                        <p><strong>"Required action: "</strong>{v.required_action.clone()}</p>
+                        <p class="muted">{format!("Added {}. Federal due date {}. Ransomware use: {}.",
+                            v.date_added, v.due_date, v.known_ransomware_campaign_use)}</p>
+                        <div class="modal-actions">
+                            <button class="btn" on:click=open("nvd") title="Opens nvd.nist.gov in your browser">"Open on NVD"</button>
+                            <button class="btn" on:click=open("cve") title="Opens cve.org in your browser">"Open on CVE.org"</button>
+                            <button class="btn primary" on:click=move |_| selected.set(None)>"Close"</button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })}
 
         <Show when=move || asking.get()>
             <div class="modal-backdrop">

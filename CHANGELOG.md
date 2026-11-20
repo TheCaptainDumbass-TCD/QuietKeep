@@ -2,6 +2,13 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.9.0
+
+- Even spacing between sections on every page. The access key on Settings has its own section
+- Security: click a CVE to see its description, required action and dates, with buttons that open its NVD or CVE.org page in your browser
+- Hosts: Add host adds a single host. The OS column shows the release a host reports, such as Debian 13, Ubuntu 26.04 LTS or Proxmox VE 9.0. The SSH user moved into the host name tooltip
+- Patches: filter hosts by operating system. Patch all installs updates on every host in the view one at a time after one confirmation and never reboots
+
 ## 0.8.1
 
 - Rollback copies are listed under each host's table instead of inside it, with how long ago they stopped and a Remove button. After 30 days QuietKeep highlights them and asks whether to remove them. Removing a copy never touches data volumes

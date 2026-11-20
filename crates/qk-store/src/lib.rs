@@ -45,6 +45,8 @@ pub struct Host {
     pub host_key_trusted: bool,
     /// QuietKeep's own key logged in to this host the last time it tried.
     pub access_ok: bool,
+    /// Release name reported by the host, such as "Debian GNU/Linux 13 (trixie)".
+    pub os_name: Option<String>,
 }
 
 /// Patch state of one host from its most recent scan.
@@ -62,6 +64,7 @@ pub struct PatchStatus {
     pub scan_error: Option<String>,
     /// Updates apt upgrade skips (phased or kept back); not counted in `pending`.
     pub held: u32,
+    pub os_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -248,7 +251,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT h.id, h.name, h.os_type, h.is_patch_target, h.host_key IS NOT NULL, h.last_scan_at,
                     COUNT(u.name) - COUNT(u.held), COALESCE(SUM(u.security AND u.held IS NULL), 0), h.reboot_required, h.scan_error,
-                    COUNT(u.held)
+                    COUNT(u.held), h.os_name
              FROM hosts h LEFT JOIN pending_updates u ON u.host_id = h.id
              GROUP BY h.id ORDER BY h.name",
         )?;
@@ -268,6 +271,7 @@ impl Store {
                 reboot_required: r.get(8)?,
                 scan_error: r.get(9)?,
                 held: r.get(10)?,
+                os_name: r.get(11)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -482,7 +486,7 @@ pub fn record_metrics(&mut self, id: i64, m: &MetricSample, kernel: &str, os_nam
     }
 }
 
-const HOST_COLS: &str = "id, name, address, username, os_type, is_patch_target, has_docker, host_key, access_ok";
+const HOST_COLS: &str = "id, name, address, username, os_type, is_patch_target, has_docker, host_key, access_ok, os_name";
 
 fn map_host(r: &rusqlite::Row<'_>) -> rusqlite::Result<Host> {
     let os: String = r.get(4)?;
@@ -501,6 +505,7 @@ fn map_host(r: &rusqlite::Row<'_>) -> rusqlite::Result<Host> {
         },
         host_key_trusted: host_key.is_some(),
         access_ok: r.get(8)?,
+        os_name: r.get(9)?,
         host_key,
     })
 }

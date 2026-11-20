@@ -42,6 +42,69 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
     };
     load();
 
+    let os_filter = RwSignal::new(String::new());
+    let bulk_confirm = RwSignal::new(false);
+    let bulk_running = RwSignal::new(false);
+    let label = |r: &PatchStatus| crate::hosts::os_label(r.os_name.as_deref(), &r.os_type);
+    let visible = move || {
+        let f = os_filter.get();
+        rows.get().into_iter().filter(|r| f.is_empty() || label(r) == f).collect::<Vec<_>>()
+    };
+    let os_options = move || {
+        let mut v: Vec<String> = rows.with(|r| r.iter().map(label).collect());
+        v.sort();
+        v.dedup();
+        v
+    };
+    let patchable = move || {
+        visible()
+            .into_iter()
+            .filter(|r| r.host_key_trusted && r.is_patch_target && r.pending > 0)
+            .map(|r| (r.host_id, r.name))
+            .collect::<Vec<_>>()
+    };
+    let patch_all = move |_| {
+        bulk_confirm.set(false);
+        let targets = patchable();
+        bulk_running.set(true);
+        spawn_local(async move {
+            let total = targets.len();
+            let (mut done, mut failed, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+            for (i, (id, name)) in targets.into_iter().enumerate() {
+                running.set(Some(id));
+                notice.set(Some(format!("Patching {} of {}: {name}...", i + 1, total)));
+                match api::check_privileged(id, "patch").await {
+                    Ok(c) if !c.allowed => {
+                        skipped.push(name);
+                        continue;
+                    }
+                    Err(_) => {
+                        failed.push(name);
+                        continue;
+                    }
+                    Ok(_) => {}
+                }
+                match api::run_action(id, "patch").await {
+                    Ok(_) => done.push(name),
+                    Err(_) => failed.push(name),
+                }
+                load();
+            }
+            running.set(None);
+            bulk_running.set(false);
+            let mut msg = format!("Patched {} of {} hosts.", done.len(), total);
+            if !failed.is_empty() {
+                msg.push_str(&format!(" Failed: {}.", failed.join(", ")));
+            }
+            if !skipped.is_empty() {
+                msg.push_str(&format!(" Skipped, no patch rule yet (use Patch on the row once): {}.", skipped.join(", ")));
+            }
+            notice.set(Some(msg));
+            load();
+            refresh.run(());
+        })
+    };
+
     let scan_one = move |id: i64, name: String| {
         scanning.update(|s| s.push(id));
         spawn_local(async move {
@@ -126,8 +189,32 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
 
         <div class="toolbar">
             <button class="btn primary" on:click=scan_all disabled=move || all_busy.get()>"Scan trusted hosts"</button>
+            <button class="btn warn" on:click=move |_| bulk_confirm.set(true)
+                disabled=move || bulk_running.get() || running.get().is_some() || patchable().is_empty()
+                title=move || if patchable().is_empty() { "No trusted host in this view has updates to install" } else { "Patch the hosts in this view one at a time" }>
+                {move || format!("Patch all ({})", patchable().len())}
+            </button>
+            <select title="Show only hosts running this OS" prop:value=move || os_filter.get()
+                on:change=move |ev| os_filter.set(event_target_value(&ev))>
+                <option value="">"All operating systems"</option>
+                {move || os_options().into_iter().map(|o| view! { <option value=o.clone()>{o.clone()}</option> }).collect_view()}
+            </select>
             <StatusLine notice=notice working=Signal::derive(move || all_busy.get() || running.get().is_some() || scanning.with(|s| !s.is_empty())) />
         </div>
+        <Show when=move || bulk_confirm.get()>
+            <div class="modal-backdrop">
+                <div class="modal">
+                    <h2>{move || format!("Patch {} hosts?", patchable().len())}</h2>
+                    <p>"QuietKeep installs the pending updates on each host one at a time, using the same exact command as the row Patch button. "
+                       "It does not reboot. Hosts without a patch rule are skipped."</p>
+                    <ul>{move || patchable().into_iter().map(|(_, n)| view! { <li>{n}</li> }).collect_view()}</ul>
+                    <div class="modal-actions">
+                        <button class="btn" on:click=move |_| bulk_confirm.set(false)>"Cancel"</button>
+                        <button class="btn warn" on:click=patch_all>"Patch one at a time"</button>
+                    </div>
+                </div>
+            </div>
+        </Show>
         <p class="muted small">"Scans are read-only. They list pending updates and check whether a reboot is needed, without sudo."</p>
 
         <table class="table">
@@ -145,7 +232,7 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
             </thead>
             <tbody>
                 <For
-                    each=move || rows.get()
+                    each=visible
                     key=|r| (r.host_id, r.last_scan_at, r.pending, r.held, r.security, r.reboot_required, r.scan_error.clone(), r.host_key_trusted)
                     let:r
                 >
@@ -169,7 +256,7 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                         view! {
                             <tr>
                                 <td>{r.name.clone()}</td>
-                                <td>{r.os_type.clone()}</td>
+                                <td>{label(&r)}</td>
                                 <td>{r.pending}{(held > 0).then(|| view! {
                                     <span class="pill held" title="apt upgrade skips these on purpose: Ubuntu is phasing them in gradually, or they need new packages. They install on their own later. See Details.">
                                         {format!("+{held} held")}

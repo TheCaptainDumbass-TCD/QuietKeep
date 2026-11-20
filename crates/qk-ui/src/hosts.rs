@@ -16,6 +16,7 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
     let preview = RwSignal::new(None::<ImportReport>);
     let notice = RwSignal::new(None::<String>);
     let pending_delete = RwSignal::new(None::<Host>);
+    let adding = RwSignal::new(false);
     let delete_typed = RwSignal::new(String::new());
     let probe = RwSignal::new(None::<(Host, HostKeyProbe)>);
     let access_key = RwSignal::new(None::<String>);
@@ -228,7 +229,11 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
     };
 
     view! {
+        <Show when=move || adding.get()>
+            <AddHostDialog open=adding on_added=refresh />
+        </Show>
         <div class="toolbar">
+            <button class="btn primary" on:click=move |_| adding.set(true)>"Add host"</button>
             <button class="btn primary" on:click=start_import>"Import CSV"</button>
             <button class="btn" on:click=export disabled=move || hosts.with(|h| h.is_empty())>
                 "Export CSV"
@@ -253,7 +258,6 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                     <tr>
                         <th>"Name"</th>
                         <th>"Address"</th>
-                        <th>"User"</th>
                         <th>"OS"</th>
                         <th>"Patching"</th>
                         <th>"Docker"</th>
@@ -270,10 +274,11 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                             let trusted = host.host_key_trusted;
                             view! {
                                 <tr>
-                                    <td>{host.spec.name.clone()}</td>
+                                    <td title=format!("Logs in as {}", host.spec.username)>{host.spec.name.clone()}</td>
                                     <td class="mono">{host.spec.address.clone()}</td>
-                                    <td class="mono">{host.spec.username.clone()}</td>
-                                    <td>{host.spec.os_type.clone()}</td>
+                                    <td title=format!("Package manager: {}", host.spec.os_type)>
+                                        {os_label(host.os_name.as_deref(), &host.spec.os_type)}
+                                    </td>
                                     <td>{if host.spec.is_patch_target { "Yes" } else { "Monitor only" }}</td>
                                     <td>{if host.spec.has_docker { "Yes" } else { "No" }}</td>
                                     <td>
@@ -499,5 +504,100 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                 </div>
             </div>
         </Show>
+    }
+}
+
+/// Turns an os-release name into a short label, such as "Debian 13" or "Ubuntu 26.04 LTS".
+pub(crate) fn os_label(os_name: Option<&str>, os_type: &str) -> String {
+    match os_name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => {
+            let mut label = name.replace(" GNU/Linux", "");
+            if let Some(i) = label.find(" (") {
+                if label.ends_with(')') {
+                    label.truncate(i);
+                }
+            }
+            label
+        }
+        None => match os_type {
+            "apt" => "Debian or Ubuntu".into(),
+            "kali" => "Kali".into(),
+            "pacman" => "Arch".into(),
+            "proxmox" => "Proxmox".into(),
+            other => other.into(),
+        },
+    }
+}
+
+#[component]
+fn AddHostDialog(open: RwSignal<bool>, on_added: Callback<()>) -> impl IntoView {
+    let name = RwSignal::new(String::new());
+    let address = RwSignal::new(String::new());
+    let username = RwSignal::new(String::new());
+    let os_type = RwSignal::new("apt".to_string());
+    let patch = RwSignal::new(true);
+    let docker = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+    let saving = RwSignal::new(false);
+    let incomplete = move || {
+        name.with(|v| v.trim().is_empty()) || address.with(|v| v.trim().is_empty()) || username.with(|v| v.trim().is_empty())
+    };
+    let save = move |_| {
+        let spec = api::HostSpec {
+            name: name.get_untracked().trim().to_string(),
+            address: address.get_untracked().trim().to_string(),
+            username: username.get_untracked().trim().to_string(),
+            os_type: os_type.get_untracked(),
+            is_patch_target: patch.get_untracked(),
+            has_docker: docker.get_untracked(),
+        };
+        saving.set(true);
+        spawn_local(async move {
+            match api::add_host(spec).await {
+                Ok(_) => {
+                    open.set(false);
+                    on_added.run(());
+                }
+                Err(e) => error.set(Some(e)),
+            }
+            saving.set(false);
+        })
+    };
+    view! {
+        <div class="modal-backdrop">
+            <div class="modal">
+                <h2>"Add host"</h2>
+                <p class="muted small">"QuietKeep saves the host and does not connect yet. Verify its key and set up access from the host list."</p>
+                <div class="form-grid">
+                    <label for="add-name">"Name"</label>
+                    <input id="add-name" type="text" autofocus placeholder="svc-example" prop:value=move || name.get()
+                        on:input=move |ev| name.set(event_target_value(&ev)) />
+                    <label for="add-address">"Address"</label>
+                    <input id="add-address" type="text" placeholder="192.0.2.10 or host.lan" prop:value=move || address.get()
+                        on:input=move |ev| address.set(event_target_value(&ev)) />
+                    <label for="add-user">"SSH user"</label>
+                    <input id="add-user" type="text" prop:value=move || username.get()
+                        on:input=move |ev| username.set(event_target_value(&ev)) />
+                    <label for="add-os">"Package manager"</label>
+                    <select id="add-os" prop:value=move || os_type.get() on:change=move |ev| os_type.set(event_target_value(&ev))>
+                        <option value="apt">"Debian or Ubuntu (apt)"</option>
+                        <option value="kali">"Kali (apt)"</option>
+                        <option value="proxmox">"Proxmox"</option>
+                        <option value="pacman">"Arch (pacman)"</option>
+                    </select>
+                </div>
+                <label class="check"><input type="checkbox" prop:checked=move || patch.get()
+                    on:change=move |ev| patch.set(event_target_checked(&ev)) />" Patch this host (otherwise monitor only)"</label>
+                <label class="check"><input type="checkbox" prop:checked=move || docker.get()
+                    on:change=move |ev| docker.set(event_target_checked(&ev)) />" Runs Docker"</label>
+                {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
+                <div class="modal-actions">
+                    <button class="btn" on:click=move |_| open.set(false)>"Cancel"</button>
+                    <button class="btn primary" on:click=save
+                        disabled=move || saving.get() || incomplete()
+                        title=move || if incomplete() { "Fill in name, address and SSH user" } else { "" }>"Add host"</button>
+                </div>
+            </div>
+        </div>
     }
 }

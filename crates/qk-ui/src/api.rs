@@ -23,6 +23,8 @@ pub struct Host {
     pub host_key_trusted: bool,
     #[serde(default)]
     pub access_ok: bool,
+    #[serde(default)]
+    pub os_name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -58,6 +60,14 @@ fn args<T: Serialize>(value: &T) -> JsValue {
 
 pub async fn list_hosts() -> Result<Vec<Host>, String> {
     invoke("list_hosts", JsValue::UNDEFINED).await
+}
+
+pub async fn add_host(spec: HostSpec) -> Result<i64, String> {
+    #[derive(Serialize)]
+    struct A {
+        spec: HostSpec,
+    }
+    invoke("add_host", args(&A { spec })).await
 }
 
 pub async fn delete_host(id: i64) -> Result<bool, String> {
@@ -128,6 +138,8 @@ pub struct PatchStatus {
     pub scan_error: Option<String>,
     #[serde(default)]
     pub held: u32,
+    #[serde(default)]
+    pub os_name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -293,6 +305,15 @@ pub struct KevFilter {
     pub search: String,
     pub linux_only: bool,
     pub ransomware_only: bool,
+}
+
+pub async fn open_cve_page(cve: String, site: &'static str) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct A {
+        cve: String,
+        site: &'static str,
+    }
+    invoke("open_cve_page", args(&A { cve, site })).await
 }
 
 pub async fn kev_state() -> Result<KevState, String> {

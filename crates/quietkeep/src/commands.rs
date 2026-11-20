@@ -65,6 +65,7 @@ pub fn list_hosts(state: State<'_, AppState>) -> CmdResult<Vec<Host>> {
 
 #[tauri::command]
 pub fn add_host(state: State<'_, AppState>, spec: HostSpec) -> CmdResult<i64> {
+    spec.validate().map_err(err)?;
     store(&state).add_host(&spec).map_err(err)
 }
 
@@ -1132,4 +1133,53 @@ pub async fn docker_remove_rollback(app: AppHandle, id: i64, container: String) 
     store(&app.state::<AppState>()).log_activity("docker.remove_rollback", Some(id), &msg).map_err(err)?;
     let _ = docker_one(&app, h).await;
     result
+}
+
+fn valid_cve_id(id: &str) -> bool {
+    let mut parts = id.splitn(3, '-');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some("CVE"), Some(y), Some(n))
+            if y.len() == 4
+                && y.bytes().all(|b| b.is_ascii_digit())
+                && (4..=8).contains(&n.len())
+                && n.bytes().all(|b| b.is_ascii_digit())
+    )
+}
+
+/// Opens a public CVE page in the default browser. Only fixed NVD and CVE.org
+/// addresses built from a validated CVE ID can be opened.
+#[tauri::command]
+pub fn open_cve_page(cve: String, site: String) -> CmdResult<()> {
+    if !valid_cve_id(&cve) {
+        return Err("That is not a valid CVE ID.".into());
+    }
+    let url = match site.as_str() {
+        "nvd" => format!("https://nvd.nist.gov/vuln/detail/{cve}"),
+        "cve" => format!("https://www.cve.org/CVERecord?id={cve}"),
+        _ => return Err("Unknown site.".into()),
+    };
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not open the browser: {e}"))
+}
+
+#[cfg(test)]
+mod cve_tests {
+    use super::valid_cve_id;
+
+    #[test]
+    fn cve_ids_are_validated() {
+        assert!(valid_cve_id("CVE-2024-3094"));
+        assert!(valid_cve_id("CVE-2026-123158"));
+        assert!(!valid_cve_id("CVE-2024-30"));
+        assert!(!valid_cve_id("CVE-2024-3094&x=1"));
+        assert!(!valid_cve_id("cve-2024-3094"));
+        assert!(!valid_cve_id("CVE-24-3094"));
+    }
 }

@@ -83,7 +83,9 @@ pub fn SettingsPanel(refresh: Callback<()>) -> impl IntoView {
                 "QuietKeep runs entirely on this computer. It opens no network port, sends no telemetry and only connects to the hosts you add. "
                 "Downloads from cisa.gov happen only after you allow them."
             </p>
-            <h3>"Access key"</h3>
+        </section>
+        <section class="card">
+            <h2>"Access key"</h2>
             <p class="muted small">"Add this public key to ~/.ssh/authorized_keys on each host QuietKeep manages."</p>
             <textarea class="keybox mono" readonly rows="3">{move || public_key.get()}</textarea>
         </section>

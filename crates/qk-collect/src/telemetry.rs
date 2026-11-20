@@ -9,7 +9,11 @@ echo "uptime=$(cut -d' ' -f1 /proc/uptime)"
 awk '/^MemTotal:/{print "mem_total="$2} /^MemAvailable:/{print "mem_avail="$2}' /proc/meminfo
 df -P / | awk 'NR==2{sub(/%/,"",$5); print "disk_used="$5}'
 echo "kernel=$(uname -r)"
-(. /etc/os-release 2>/dev/null; echo "os=$PRETTY_NAME")"#;
+pve=$(dpkg-query -W -f='${Version}' pve-manager 2>/dev/null)
+pbs=$(dpkg-query -W -f='${Version}' proxmox-backup-server 2>/dev/null)
+if [ -n "$pve" ]; then echo "os=Proxmox VE ${pve%%-*}"
+elif [ -n "$pbs" ]; then echo "os=Proxmox Backup Server ${pbs%%-*}"
+else (. /etc/os-release 2>/dev/null; echo "os=$PRETTY_NAME"); fi"#;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Telemetry {
