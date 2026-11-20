@@ -13,6 +13,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0002_scans.sql"),
     include_str!("migrations/0003_docker.sql"),
     include_str!("migrations/0004_metrics.sql"),
+    include_str!("migrations/0005_access.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -37,6 +38,8 @@ pub struct Host {
     /// Pinned SHA-256 fingerprint of the host's SSH key, once the user has approved it.
     pub host_key: Option<String>,
     pub host_key_trusted: bool,
+    /// QuietKeep's own key logged in to this host the last time it tried.
+    pub access_ok: bool,
 }
 
 /// Patch state of one host from its most recent scan.
@@ -156,6 +159,11 @@ impl Store {
     }
 
     /// Pins the host's SSH key fingerprint after the user approved it.
+    pub fn set_access_ok(&mut self, id: i64, ok: bool) -> Result<()> {
+        self.conn.execute("UPDATE hosts SET access_ok = ?2 WHERE id = ?1", rusqlite::params![id, ok])?;
+        Ok(())
+    }
+
     pub fn set_host_key(&mut self, id: i64, fingerprint: &str) -> Result<bool> {
         let tx = self.conn.transaction()?;
         let name: Option<String> = tx
@@ -163,7 +171,7 @@ impl Store {
             .optional()?;
         let Some(name) = name else { return Ok(false) };
         tx.execute(
-            "UPDATE hosts SET host_key = ?1, updated_at = unixepoch() WHERE id = ?2",
+            "UPDATE hosts SET host_key = ?1, access_ok = CASE WHEN host_key IS ?1 THEN access_ok ELSE 0 END, updated_at = unixepoch() WHERE id = ?2",
             params![fingerprint, id],
         )?;
         log(&tx, "host.key_trusted", Some(id), &format!("Trusted host key for {name}: {fingerprint}"))?;
@@ -443,7 +451,7 @@ pub fn record_metrics(&mut self, id: i64, m: &MetricSample, kernel: &str, os_nam
     }
 }
 
-const HOST_COLS: &str = "id, name, address, username, os_type, is_patch_target, has_docker, host_key";
+const HOST_COLS: &str = "id, name, address, username, os_type, is_patch_target, has_docker, host_key, access_ok";
 
 fn map_host(r: &rusqlite::Row<'_>) -> rusqlite::Result<Host> {
     let os: String = r.get(4)?;
@@ -461,6 +469,7 @@ fn map_host(r: &rusqlite::Row<'_>) -> rusqlite::Result<Host> {
             has_docker: r.get(6)?,
         },
         host_key_trusted: host_key.is_some(),
+        access_ok: r.get(8)?,
         host_key,
     })
 }

@@ -182,7 +182,8 @@ pub async fn test_connection(state: State<'_, AppState>, id: i64) -> CmdResult<S
     let conn = match qk_ssh::connect(&target(&h), state.identity.clone(), TrustPolicy::Pinned(fp), SSH_TIMEOUT).await {
         Ok(c) => c,
         Err(SshError::AuthFailed(user)) => {
-            return Err(format!("Login as {user} was refused. Add QuietKeep's access key to that user's authorized_keys."))
+            let _ = store(&state).set_access_ok(id, false);
+            return Err(format!("Login as {user} was refused. Click Set up access to install QuietKeep's key."))
         }
         Err(e) => return Err(e.to_string()),
     };
@@ -192,6 +193,7 @@ pub async fn test_connection(state: State<'_, AppState>, id: i64) -> CmdResult<S
         return Err(format!("uname exited with {:?}", out.exit_status));
     }
     let system = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let _ = store(&state).set_access_ok(id, true);
     store(&state)
         .log_activity("host.connected", Some(id), &format!("Connected to {} ({system})", h.spec.name))
         .map_err(err)?;
@@ -352,8 +354,14 @@ async fn connect_trusted(app: &AppHandle, h: &Host) -> CmdResult<qk_ssh::Connect
         return Err("Verify this host's key first.".into());
     };
     let identity = app.state::<AppState>().identity.clone();
-    qk_ssh::connect(&target(h), identity, TrustPolicy::Pinned(fp), SSH_TIMEOUT).await.map_err(|e| match e {
-        SshError::AuthFailed(user) => format!("Login as {user} was refused. Install QuietKeep's access key."),
+    let result = qk_ssh::connect(&target(h), identity, TrustPolicy::Pinned(fp), SSH_TIMEOUT).await;
+    match &result {
+        Ok(_) => { let _ = store(&app.state::<AppState>()).set_access_ok(h.id, true); }
+        Err(SshError::AuthFailed(_)) => { let _ = store(&app.state::<AppState>()).set_access_ok(h.id, false); }
+        Err(_) => {}
+    }
+    result.map_err(|e| match e {
+        SshError::AuthFailed(user) => format!("Login as {user} was refused. Click Set up access to install QuietKeep's key."),
         other => other.to_string(),
     })
 }

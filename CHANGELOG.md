@@ -2,6 +2,11 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.5.0
+
+- Set up all hosts: one approval trusts each reachable host's key and installs QuietKeep's key with your SSH key, with a result for every host
+- Hosts where QuietKeep's own key works show Access ready instead of Set up access
+
 ## 0.4.2
 
 - Set up access is one approval step: the fingerprint check no longer shows commands to run, and an optional detail covers checking it yourself

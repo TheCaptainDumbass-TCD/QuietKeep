@@ -211,3 +211,8 @@ label.check { display: flex; align-items: center; gap: 6px; margin: 10px 0; }
 .btn.subtle { opacity: 0.7; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .modal input.search { width: 100%; box-sizing: border-box; }
+
+.modal.wide { width: min(900px, 92vw); max-height: 85vh; overflow: auto; }
+td.ok { color: #22c55e; }
+td.error { color: #ef4444; }
+.mono.small { font-size: 11px; }

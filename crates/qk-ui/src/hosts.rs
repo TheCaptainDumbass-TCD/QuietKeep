@@ -3,6 +3,14 @@ use leptos::task::spawn_local;
 
 use crate::api::{self, Host, HostKeyProbe, ImportReport};
 
+#[derive(Clone)]
+struct BulkItem {
+    host: Host,
+    fingerprint: Option<String>,
+    status: String,
+    ok: Option<bool>,
+}
+
 #[component]
 pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl IntoView {
     let preview = RwSignal::new(None::<ImportReport>);
@@ -18,6 +26,82 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
     let setup_agent = RwSignal::new(true);
     let setup_busy = RwSignal::new(false);
     let setup_error = RwSignal::new(None::<String>);
+    let bulk = RwSignal::new(None::<Vec<BulkItem>>);
+    let bulk_password = RwSignal::new(String::new());
+    let bulk_sudoers = RwSignal::new(true);
+    let bulk_busy = RwSignal::new(false);
+    let bulk_done = RwSignal::new(false);
+    let set_item = move |i: usize, status: String, ok: Option<bool>, fp: Option<String>| {
+        bulk.update(|b| {
+            if let Some(it) = b.as_mut().and_then(|b| b.get_mut(i)) {
+                it.status = status;
+                it.ok = ok;
+                if fp.is_some() {
+                    it.fingerprint = fp;
+                }
+            }
+        })
+    };
+    let open_bulk = move |_| {
+        let targets: Vec<Host> = hosts.get_untracked().into_iter().filter(|h| !h.access_ok).collect();
+        if targets.is_empty() {
+            notice.set(Some("Every host is already set up.".into()));
+            return;
+        }
+        bulk_password.set(String::new());
+        bulk_done.set(false);
+        bulk.set(Some(
+            targets
+                .iter()
+                .map(|h| BulkItem {
+                    host: h.clone(),
+                    fingerprint: h.host_key.clone(),
+                    status: if h.host_key_trusted { "Key already trusted".into() } else { "Checking host key...".into() },
+                    ok: None,
+                })
+                .collect(),
+        ));
+        for (i, h) in targets.into_iter().enumerate() {
+            if h.host_key_trusted {
+                continue;
+            }
+            spawn_local(async move {
+                match api::probe_host_key(h.id).await {
+                    Ok(p) => set_item(i, "Ready".into(), None, Some(format!("{} {}", p.algorithm, p.fingerprint))),
+                    Err(e) => set_item(i, format!("Unreachable: {e}"), Some(false), None),
+                }
+            });
+        }
+    };
+    let run_bulk = move |_| {
+        let Some(items) = bulk.get_untracked() else { return };
+        let password = bulk_password.get_untracked();
+        let sudoers = bulk_sudoers.get_untracked();
+        bulk_busy.set(true);
+        spawn_local(async move {
+            for (i, it) in items.into_iter().enumerate() {
+                if it.ok == Some(false) {
+                    continue;
+                }
+                let Some(fp) = it.fingerprint.clone() else { continue };
+                set_item(i, "Setting up...".into(), None, None);
+                if !it.host.host_key_trusted {
+                    let raw = fp.split_whitespace().last().unwrap_or("").to_string();
+                    if let Err(e) = api::trust_host_key(it.host.id, raw).await {
+                        set_item(i, e, Some(false), None);
+                        continue;
+                    }
+                }
+                match api::setup_access(it.host.id, true, password.clone(), sudoers).await {
+                    Ok(_) => set_item(i, "Ready".into(), Some(true), None),
+                    Err(e) => set_item(i, e, Some(false), None),
+                }
+            }
+            bulk_busy.set(false);
+            bulk_done.set(true);
+            refresh.run(());
+        });
+    };
     let load_setup = move |h: Host| {
         let sudoers = setup_sudoers.get_untracked();
         let agent = setup_agent.get_untracked();
@@ -149,6 +233,9 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
             <button class="btn" on:click=export disabled=move || hosts.with(|h| h.is_empty())>
                 "Export CSV"
             </button>
+            <button class="btn primary" on:click=open_bulk disabled=move || hosts.with(|h| h.iter().all(|h| h.access_ok))>
+                "Set up all hosts"
+            </button>
             <button class="btn" on:click=show_access_key>"Show public key"</button>
             <span class="muted">{move || notice.get().unwrap_or_default()}</span>
         </div>
@@ -197,7 +284,13 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                                         }}
                                     </td>
                                     <td class="actions">
-                                        {if trusted {
+                                        {if trusted && h_ssh.access_ok {
+                                            view! {
+                                                <button class="btn small" disabled=move || busy.get() == Some(id)
+                                                    on:click={let h = h_ssh.clone(); move |_| test(h.clone())}>"Test"</button>
+                                                <button class="btn small" disabled=true title="QuietKeep's key works on this host">"Access ready"</button>
+                                            }.into_any()
+                                        } else if trusted {
                                             view! {
                                                 <button class="btn small" disabled=move || busy.get() == Some(id)
                                                     on:click={let h = h_ssh.clone(); move |_| test(h.clone())}>"Test"</button>
@@ -293,6 +386,53 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
             </div>
         </Show>
 
+        <Show when=move || bulk.with(|b| b.is_some())>
+            <div class="modal-backdrop">
+                <div class="modal wide">
+                    <h2>"Set up all hosts"</h2>
+                    <p>"QuietKeep logs in to each host once with your own SSH key (ssh-agent), adds its key and fixes ~/.ssh permissions. Trusting a host also pins the fingerprint shown below."</p>
+                    <label class="check">
+                        <input type="checkbox" prop:checked=move || bulk_sudoers.get()
+                            on:change=move |ev| bulk_sudoers.set(event_target_checked(&ev)) />
+                        " Also allow patching and rebooting (installs the sudoers rule)"
+                    </label>
+                    <Show when=move || bulk_sudoers.get()>
+                        <input class="search" type="password" autocomplete="off"
+                            placeholder="sudo password, used for every host and not saved (leave empty if sudo needs none)"
+                            prop:value=move || bulk_password.get()
+                            on:input=move |ev| bulk_password.set(event_target_value(&ev)) />
+                    </Show>
+                    <table class="table">
+                        <thead><tr><th>"Host"</th><th>"Fingerprint"</th><th>"Status"</th></tr></thead>
+                        <tbody>
+                            {move || bulk.get().unwrap_or_default().into_iter().map(|it| {
+                                let class = match it.ok { Some(true) => "ok", Some(false) => "error", None => "muted" };
+                                view! {
+                                    <tr>
+                                        <td>{it.host.spec.name.clone()}</td>
+                                        <td class="mono small">{it.fingerprint.clone().unwrap_or_default()}</td>
+                                        <td class=class>{it.status.clone()}</td>
+                                    </tr>
+                                }
+                            }).collect_view()}
+                        </tbody>
+                    </table>
+                    <div class="modal-actions">
+                        <button class="btn" disabled=move || bulk_busy.get() on:click=move |_| bulk.set(None)>
+                            {move || if bulk_done.get() { "Close" } else { "Cancel" }}
+                        </button>
+                        <Show when=move || !bulk_done.get()>
+                            <button class="btn primary" disabled=move || bulk_busy.get() on:click=run_bulk>
+                                {move || {
+                                    let n = bulk.with(|b| b.as_ref().map(|b| b.iter().filter(|i| i.ok != Some(false) && i.fingerprint.is_some()).count()).unwrap_or(0));
+                                    format!("Trust and set up {n} hosts")
+                                }}
+                            </button>
+                        </Show>
+                    </div>
+                </div>
+            </div>
+        </Show>
         <Show when=move || pending_delete.with(|p| p.is_some())>
             <div class="modal-backdrop">
                 <div class="modal">

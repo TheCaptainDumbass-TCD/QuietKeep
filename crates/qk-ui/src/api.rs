@@ -21,6 +21,8 @@ pub struct Host {
     #[serde(default)]
     pub host_key: Option<String>,
     pub host_key_trusted: bool,
+    #[serde(default)]
+    pub access_ok: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
