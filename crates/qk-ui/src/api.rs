@@ -230,6 +230,8 @@ pub struct ContainerRow {
     pub major_tag: Option<String>,
     #[serde(default)]
     pub stopped_days: Option<i64>,
+    #[serde(default)]
+    pub snoozed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -469,6 +471,42 @@ pub async fn docker_move_preview(id: i64, container: String) -> Result<MovePrevi
 
 pub async fn docker_move_to_compose(id: i64, container: String) -> Result<String, String> {
     invoke("docker_move_to_compose", args(&ContainerArg { id, container })).await
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct UnusedImage {
+    pub id: String,
+    pub repository: String,
+    pub tag: String,
+    pub size: String,
+    pub created: String,
+}
+
+pub async fn docker_unused_images(id: i64) -> Result<Vec<UnusedImage>, String> {
+    #[derive(Serialize)]
+    struct A {
+        id: i64,
+    }
+    invoke("docker_unused_images", args(&A { id })).await
+}
+
+pub async fn docker_remove_images(id: i64, images: Vec<String>) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct A {
+        id: i64,
+        images: Vec<String>,
+    }
+    invoke("docker_remove_images", args(&A { id, images })).await
+}
+
+pub async fn docker_snooze_major(id: i64, container: String, snooze: bool) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct A {
+        id: i64,
+        container: String,
+        snooze: bool,
+    }
+    invoke("docker_snooze_major", args(&A { id, container, snooze })).await
 }
 
 pub async fn docker_remove_rollback(id: i64, container: String) -> Result<String, String> {

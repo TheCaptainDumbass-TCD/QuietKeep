@@ -52,6 +52,37 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
         }
     });
 
+    let db_details = RwSignal::new(None::<(i64, String, String, String, bool)>);
+    let cleanup = RwSignal::new(None::<(i64, String, Vec<api::UnusedImage>)>);
+    let cleanup_selected = RwSignal::new(Vec::<String>::new());
+    let open_cleanup = move |id: i64, host: String| {
+        busy.set(true);
+        notice.set(Some(format!("Listing unused images on {host}...")));
+        spawn_local(async move {
+            match api::docker_unused_images(id).await {
+                Ok(list) => {
+                    notice.set(None);
+                    cleanup_selected.set(list.iter().map(|i| i.id.clone()).collect());
+                    cleanup.set(Some((id, host, list)));
+                }
+                Err(e) => notice.set(Some(format!("{host}: {e}"))),
+            }
+            busy.set(false);
+        })
+    };
+    let remove_images = move |_| {
+        let Some((id, host, _)) = cleanup.get_untracked() else { return };
+        let images = cleanup_selected.get_untracked();
+        cleanup.set(None);
+        busy.set(true);
+        notice.set(Some(format!("Removing {} images on {host}...", images.len())));
+        spawn_local(async move {
+            match api::docker_remove_images(id, images).await {
+                Ok(m) | Err(m) => notice.set(Some(m)),
+            }
+            busy.set(false);
+        })
+    };
     let load = move || {
         spawn_local(async move {
             match api::docker_status().await {
@@ -239,7 +270,7 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                 </div>
             </section>
         </Show>
-        <For each=move || hosts.get() key=|h| (h.host_id, h.docker_scan_at, h.containers.len()) let:h>
+        <For each=move || hosts.get() key=|h| (h.host_id, h.docker_scan_at, format!("{:?}", h.containers)) let:h>
             {
                 let id = h.host_id;
                 let trusted = h.host_key_trusted;
@@ -257,6 +288,9 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                             <h2>{h.name.clone()}</h2>
                             {status}
                             <span class="spacer"></span>
+                            <button class="btn small" disabled=move || !trusted || busy.get()
+                                title="List images no container uses and choose which to delete"
+                                on:click={let n = h.name.clone(); move |_| open_cleanup(id, n.clone())}>"Clean up images"</button>
                             <button class="btn small primary" disabled=move || !trusted || busy.get()
                                 on:click=move |_| scan_one(id, name_scan.clone())>"Scan"</button>
                         </div>
@@ -277,6 +311,7 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                                             _ if rollback => view! { <span class="pill held" title="A stopped copy kept so an update or move can be undone. Remove it with docker rm once the new container works.">"Kept for rollback"</span> }.into_any(),
                                             ("release", _) => view! { <span class="pill warn" title=note.clone()>{format!("{latest} available")}</span> }.into_any(),
                                             ("rebuild", _) => view! { <span class="pill warn" title="The same tag now points to a newer build">"New build"</span> }.into_any(),
+                                            ("major", _) if c.snoozed => view! { <span class="muted" title="You snoozed this notice. It returns when a newer major release appears.">{format!("Major {major} snoozed")}</span> }.into_any(),
                                             ("major", _) => view! { <span class="pill held" title=note.clone()>{format!("Major {major} available")}</span> }.into_any(),
                                             ("pinned-current", _) => view! { <span class="pill held" title=note.clone()>"Pinned, up to date"</span> }.into_any(),
                                             ("pinned-behind", _) => view! { <span class="pill bad" title=note.clone()>"Pinned, behind"</span> }.into_any(),
@@ -309,6 +344,13 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                                                 view! {
                                                     <button class="btn small warn" disabled=move || busy.get()
                                                         on:click=move |_| open_tag(id, host_t.clone(), cname.clone(), false)>{label}</button>
+                                                }.into_any()
+                                            }
+                                            ("major", _, _) if database => {
+                                                let d = (id, cname.clone(), c.image.clone(), major.clone(), c.snoozed);
+                                                view! {
+                                                    <button class="btn small" title="Why there is no one click upgrade for a database"
+                                                        on:click=move |_| db_details.set(Some(d.clone()))>"Details"</button>
                                                 }.into_any()
                                             }
                                             ("major", _, true) if !database => {
@@ -368,6 +410,100 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                 }
             }
         </For>
+
+        {move || cleanup.get().map(|(_, host, list)| {
+            let empty = list.is_empty();
+            view! {
+                <div class="modal-backdrop">
+                    <div class="modal wide">
+                        <h2>{format!("Unused images on {host}")}</h2>
+                        {if empty {
+                            view! { <p class="muted">"Every image on this host is used by a container. Nothing to clean up."</p> }.into_any()
+                        } else {
+                            view! {
+                                <p>"No container uses these images, including stopped rollback copies. QuietKeep runs docker image rm on the ones you select. "
+                                   "Volumes and containers are never touched. Removed images download again if a later update needs them."</p>
+                                <table class="table">
+                                    <thead><tr><th></th><th>"Image"</th><th>"Size"</th><th>"Created"</th></tr></thead>
+                                    <tbody>
+                                        {list.into_iter().map(|i| {
+                                            let iid = i.id.clone();
+                                            let iid2 = i.id.clone();
+                                            let label = if i.repository == "<none>" { format!("Untagged {}", &i.id[7..19]) } else { format!("{}:{}", i.repository, i.tag) };
+                                            view! {
+                                                <tr>
+                                                    <td><input type="checkbox" prop:checked=move || cleanup_selected.with(|s| s.contains(&iid))
+                                                        on:change=move |ev| {
+                                                            let on = event_target_checked(&ev);
+                                                            let id = iid2.clone();
+                                                            cleanup_selected.update(|s| { s.retain(|x| *x != id); if on { s.push(id) } });
+                                                        } /></td>
+                                                    <td class="mono">{label}</td>
+                                                    <td>{i.size}</td>
+                                                    <td class="muted">{i.created}</td>
+                                                </tr>
+                                            }
+                                        }).collect_view()}
+                                    </tbody>
+                                </table>
+                            }.into_any()
+                        }}
+                        <div class="modal-actions">
+                            <button class="btn" on:click=move |_| cleanup.set(None)>"Cancel"</button>
+                            <button class="btn danger" on:click=remove_images
+                                disabled=move || cleanup_selected.with(|s| s.is_empty())
+                                title=move || if cleanup_selected.with(|s| s.is_empty()) { "Select at least one image" } else { "" }>
+                                {move || format!("Delete {} images", cleanup_selected.with(|s| s.len()))}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })}
+
+        {move || db_details.get().map(|(id, container, image, major, snoozed)| {
+            let current = image.rsplit_once(':').map(|(_, t)| t.to_string()).unwrap_or_default();
+            let current_major = current.split(['.', '-']).next().and_then(|v| v.parse::<u32>().ok());
+            let support = match current_major {
+                Some(v) if image.contains("postgres") && v >= 10 => format!(
+                    "PostgreSQL {v} gets security fixes until November {}. The {current} tag keeps receiving those fixes through normal updates.",
+                    2012 + v
+                ),
+                _ => "Check the vendor's support policy for how long your current version gets security fixes.".to_string(),
+            };
+            let toggle = {
+                let container = container.clone();
+                move |_| {
+                    let container = container.clone();
+                    spawn_local(async move {
+                        if let Err(e) = api::docker_snooze_major(id, container, !snoozed).await {
+                            notice.set(Some(e));
+                        }
+                        db_details.set(None);
+                        load();
+                    })
+                }
+            };
+            view! {
+                <div class="modal-backdrop">
+                    <div class="modal">
+                        <h2>{format!("{container}: major release {major}")}</h2>
+                        <p>{format!("This container runs {image}.")}</p>
+                        <p>"A database stores its files in a format tied to its major version. Switching the image to a new major version "
+                           "leaves the database unable to read its own data, so QuietKeep does not offer a one click upgrade."</p>
+                        <p>"Upgrading safely means dumping the data with the current version, starting the new version on a new volume "
+                           "and restoring the dump, while keeping the old volume as a backup."</p>
+                        <p class="muted">{support}</p>
+                        <div class="modal-actions">
+                            <button class="btn" on:click=toggle title=if snoozed { "Show the notice in the table again" } else { "Hide the notice until a newer major release appears" }>
+                                {if snoozed { "Show notice again" } else { "Snooze until next major" }}
+                            </button>
+                            <button class="btn primary" on:click=move |_| db_details.set(None)>"Close"</button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })}
 
         <Show when=move || tag_dialog.with(|d| d.is_some())>
             <div class="modal-backdrop">

@@ -2,6 +2,13 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.10.0
+
+- Docker: database containers with a new major release get a Details button. It explains why there is no one click upgrade, how a safe upgrade works and how long the current PostgreSQL version gets security fixes
+- Docker: Snooze until next major hides that notice until a newer major release appears
+- Docker: Clean up images on each host lists images no container uses, including stopped rollback copies, with their size. Only the images you select are removed with docker image rm. Volumes and containers are never touched
+- Docker rows now refresh when only their update state changes
+
 ## 0.9.0
 
 - Even spacing between sections on every page. The access key on Settings has its own section

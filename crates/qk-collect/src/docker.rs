@@ -488,3 +488,92 @@ mod time_tests {
         assert_eq!(super::rfc3339_to_unix("0001-01-01T00:00:00Z"), None);
     }
 }
+
+/// An image that no container on the host uses, so removing it frees disk space.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnusedImage {
+    pub id: String,
+    pub repository: String,
+    pub tag: String,
+    pub size: String,
+    pub created: String,
+}
+
+#[derive(Deserialize)]
+struct ImageLine {
+    #[serde(rename = "ID")]
+    id: String,
+    #[serde(rename = "Repository", default)]
+    repository: String,
+    #[serde(rename = "Tag", default)]
+    tag: String,
+    #[serde(rename = "Size", default)]
+    size: String,
+    #[serde(rename = "CreatedSince", default)]
+    created: String,
+}
+
+/// True for a full image ID such as `sha256:` followed by 64 hex digits.
+pub fn valid_image_id(id: &str) -> bool {
+    id.strip_prefix("sha256:")
+        .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+}
+
+fn parse_images(out: &str, used: &std::collections::HashSet<String>) -> Vec<UnusedImage> {
+    let mut seen = std::collections::HashSet::new();
+    out.lines()
+        .filter_map(|l| serde_json::from_str::<ImageLine>(l.trim()).ok())
+        .filter(|i| valid_image_id(&i.id) && !used.contains(&i.id) && seen.insert(i.id.clone()))
+        .map(|i| UnusedImage { id: i.id, repository: i.repository, tag: i.tag, size: i.size, created: i.created })
+        .collect()
+}
+
+/// Lists images that no container, running or stopped, uses. Read only.
+pub async fn unused_images(conn: &Connection) -> Result<std::result::Result<Vec<UnusedImage>, String>> {
+    let ids = conn.run(&Command::new("docker").args(["container", "ls", "-a", "-q", "--no-trunc"])).await?;
+    if !ids.success() {
+        return Ok(Err(String::from_utf8_lossy(&ids.stderr).trim().to_string()));
+    }
+    let ids: Vec<String> = String::from_utf8_lossy(&ids.stdout).split_whitespace().map(str::to_string).collect();
+    let mut used = std::collections::HashSet::new();
+    if !ids.is_empty() {
+        let mut cmd = Command::new("docker").args(["container", "inspect", "--format", "{{.Image}}"]);
+        for id in &ids {
+            cmd = cmd.arg(id);
+        }
+        let out = conn.run(&cmd).await?;
+        if !out.success() {
+            return Ok(Err(String::from_utf8_lossy(&out.stderr).trim().to_string()));
+        }
+        used.extend(String::from_utf8_lossy(&out.stdout).split_whitespace().map(str::to_string));
+    }
+    let out = conn
+        .run(&Command::new("docker").args(["image", "ls", "--no-trunc", "--format", "{{json .}}"]))
+        .await?;
+    if !out.success() {
+        return Ok(Err(String::from_utf8_lossy(&out.stderr).trim().to_string()));
+    }
+    Ok(Ok(parse_images(&String::from_utf8_lossy(&out.stdout), &used)))
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn unused_images_skip_used_and_invalid_ids() {
+        let a = format!("sha256:{}", "a".repeat(64));
+        let b = format!("sha256:{}", "b".repeat(64));
+        let out = format!(
+            "{{\"ID\":\"{a}\",\"Repository\":\"nginx\",\"Tag\":\"1.27\",\"Size\":\"190MB\",\"CreatedSince\":\"3 weeks ago\"}}\n\
+             {{\"ID\":\"{b}\",\"Repository\":\"nginx\",\"Tag\":\"1.28\",\"Size\":\"192MB\",\"CreatedSince\":\"2 days ago\"}}\n\
+             {{\"ID\":\"sha256:bad; rm -rf /\",\"Repository\":\"x\",\"Tag\":\"y\"}}\n"
+        );
+        let used = std::collections::HashSet::from([b.clone()]);
+        let images = parse_images(&out, &used);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].id, a);
+        assert_eq!(images[0].tag, "1.27");
+        assert!(!valid_image_id("sha256:ABC"));
+    }
+}

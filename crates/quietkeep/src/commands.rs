@@ -549,6 +549,7 @@ async fn docker_one(app: &AppHandle, h: Host) -> CmdResult<()> {
                         latest_digest: None,
                         finished_at: c.finished_at,
                         stopped_days: None,
+                        snoozed: false,
                     };
                     let a = a.and_then(|a| {
                         let known = |k: &Option<String>| k.as_deref().is_some_and(|k| k != "unknown");
@@ -1132,6 +1133,77 @@ pub async fn docker_remove_rollback(app: AppHandle, id: i64, container: String) 
     };
     store(&app.state::<AppState>()).log_activity("docker.remove_rollback", Some(id), &msg).map_err(err)?;
     let _ = docker_one(&app, h).await;
+    result
+}
+
+/// Hides or shows again the major release notice for a container. Only the major tag
+/// currently reported for that container can be snoozed.
+#[tauri::command]
+pub fn docker_snooze_major(state: State<'_, AppState>, id: i64, container: String, snooze: bool) -> CmdResult<()> {
+    let row = container_row(&state, id, &container)?;
+    let major = row.major_tag.filter(|_| snooze);
+    if snooze && major.is_none() {
+        return Err("There is no major release to snooze for this container.".into());
+    }
+    let mut s = store(&state);
+    s.set_major_snooze(id, &container, major.as_deref()).map_err(err)?;
+    let msg = match &major {
+        Some(m) => format!("Snoozed the major release {m} notice for {container}."),
+        None => format!("Showing the major release notice for {container} again."),
+    };
+    s.log_activity("docker.snooze", Some(id), &msg).map_err(err)
+}
+
+/// Lists images on a host that no container uses. Read only.
+#[tauri::command]
+pub async fn docker_unused_images(app: AppHandle, id: i64) -> CmdResult<Vec<qk_collect::docker::UnusedImage>> {
+    let h = host(&app.state::<AppState>(), id)?;
+    let conn = connect_trusted(&app, &h).await?;
+    let r = qk_collect::docker::unused_images(&conn).await.map_err(err);
+    let _ = conn.close().await;
+    r?.map_err(|e| format!("Listing images failed: {e}"))
+}
+
+/// Removes the selected images with `docker image rm`. Every ID must be a full image ID
+/// that is still unused when checked again here, and nothing is forced.
+#[tauri::command]
+pub async fn docker_remove_images(app: AppHandle, id: i64, images: Vec<String>) -> CmdResult<String> {
+    if images.is_empty() || images.len() > 500 || !images.iter().all(|i| qk_collect::docker::valid_image_id(i)) {
+        return Err("Select one or more images to remove.".into());
+    }
+    let h = host(&app.state::<AppState>(), id)?;
+    let name = h.spec.name.clone();
+    let conn = connect_trusted(&app, &h).await?;
+    let unused = match qk_collect::docker::unused_images(&conn).await {
+        Ok(Ok(u)) => u.into_iter().map(|i| i.id).collect::<HashSet<_>>(),
+        Ok(Err(e)) => {
+            let _ = conn.close().await;
+            return Err(format!("Listing images failed: {e}"));
+        }
+        Err(e) => {
+            let _ = conn.close().await;
+            return Err(err(e));
+        }
+    };
+    if let Some(busy) = images.iter().find(|i| !unused.contains(*i)) {
+        let _ = conn.close().await;
+        return Err(format!("{busy} is now used by a container or no longer exists. Refresh the list."));
+    }
+    let mut cmd = Command::new("docker").args(["image", "rm"]);
+    for i in &images {
+        cmd = cmd.arg(i);
+    }
+    let r = conn.run(&cmd).await.map_err(err);
+    let _ = conn.close().await;
+    let result = match r {
+        Ok(o) if o.success() => Ok(format!("Removed {} unused images from {name}.", images.len())),
+        Ok(o) => Err(format!("Removing images on {name} failed: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        Err(e) => Err(e),
+    };
+    let msg = match &result {
+        Ok(m) | Err(m) => m.clone(),
+    };
+    store(&app.state::<AppState>()).log_activity("docker.remove_images", Some(id), &msg).map_err(err)?;
     result
 }
 

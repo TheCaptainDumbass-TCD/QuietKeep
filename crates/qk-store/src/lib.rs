@@ -19,6 +19,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0008_releases.sql"),
     include_str!("migrations/0009_pins.sql"),
     include_str!("migrations/0010_finished.sql"),
+    include_str!("migrations/0011_snooze.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -86,6 +87,8 @@ pub struct ContainerRow {
     pub finished_at: Option<i64>,
     /// Whole days since a stopped container stopped. Computed when read, never stored.
     pub stopped_days: Option<i64>,
+    /// The user hid the notice for this major release.
+    pub snoozed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -351,7 +354,9 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
         let mut c_stmt = self.conn.prepare(
             "SELECT name, image, state, status, project, service, config_file, update_available, update_note, update_kind, latest_tag, major_tag,
                     configured_image, latest_digest, finished_at,
-                    CASE WHEN finished_at IS NULL THEN NULL ELSE (unixepoch() - finished_at) / 86400 END
+                    CASE WHEN finished_at IS NULL THEN NULL ELSE (unixepoch() - finished_at) / 86400 END,
+                    EXISTS(SELECT 1 FROM docker_snoozes s WHERE s.host_id = containers.host_id
+                           AND s.container = containers.name AND s.major_tag = containers.major_tag)
              FROM containers WHERE host_id = ?1 ORDER BY project IS NULL, project, name",
         )?;
         for h in &mut hosts {
@@ -374,6 +379,7 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
                         latest_digest: r.get(13)?,
                         finished_at: r.get(14)?,
                         stopped_days: r.get(15)?,
+                        snoozed: r.get(16)?,
                     })
                 })?
                 .collect::<std::result::Result<_, _>>()?;
@@ -432,6 +438,23 @@ pub fn record_metrics(&mut self, id: i64, m: &MetricSample, kernel: &str, os_nam
             }
         }
         Ok(out)
+    }
+
+    /// Hides the major release notice for one container until a newer major release appears.
+    /// `None` shows the notice again.
+    pub fn set_major_snooze(&mut self, host_id: i64, container: &str, major_tag: Option<&str>) -> Result<()> {
+        match major_tag {
+            Some(tag) => self.conn.execute(
+                "INSERT INTO docker_snoozes (host_id, container, major_tag) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (host_id, container) DO UPDATE SET major_tag = excluded.major_tag",
+                rusqlite::params![host_id, container, tag],
+            )?,
+            None => self.conn.execute(
+                "DELETE FROM docker_snoozes WHERE host_id = ?1 AND container = ?2",
+                rusqlite::params![host_id, container],
+            )?,
+        };
+        Ok(())
     }
 
     pub fn log_activity(&self, kind: &str, host_id: Option<i64>, message: &str) -> Result<()> {
@@ -697,6 +720,7 @@ mod tests {
             latest_digest: None,
             finished_at: None,
             stopped_days: None,
+            snoozed: false,
         };
         store.record_docker(id, &[c.clone()]).unwrap();
         let d = &store.docker_status().unwrap()[0];
