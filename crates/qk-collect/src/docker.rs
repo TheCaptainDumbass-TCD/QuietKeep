@@ -19,6 +19,9 @@ pub struct Container {
     pub config_file: Option<String>,
     /// `None` when the registry could not be checked or the image is pinned by digest.
     pub update_available: Option<bool>,
+    /// Plain-language reason when `update_available` is `None`.
+    #[serde(default)]
+    pub update_note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -55,6 +58,7 @@ pub fn parse_ps(output: &str) -> Vec<Container> {
             service: label(&p.labels, "com.docker.compose.service"),
             config_file: label(&p.labels, "com.docker.compose.project.config_files"),
             update_available: None,
+            update_note: None,
         })
         .collect()
 }
@@ -82,25 +86,50 @@ async fn remote_digest(conn: &Connection, image: &str) -> Result<Option<String>>
     Ok(out.success().then(|| serde_json::from_slice::<String>(&out.stdout).ok()).flatten())
 }
 
-/// Fills `update_available` for each container by comparing local and registry digests.
+pub const NOTE_PINNED: &str =
+    "Pinned to a fixed digest in its compose file, so it only changes when you edit that file.";
+pub const NOTE_NO_BUILDX: &str = "docker buildx is not installed on this host, so the registry cannot be checked. Install the docker-buildx package (docker-buildx-plugin on Docker's own repository).";
+pub const NOTE_NO_LOCAL: &str = "The local image has no registry digest. It was built locally or loaded from a file.";
+pub const NOTE_REGISTRY: &str = "The registry could not be checked. It may be offline, private or rate limiting requests.";
+
+/// The image reference the container was created from, which keeps an `@sha256:` pin that `docker ps` drops.
+async fn configured_image(conn: &Connection, container: &str) -> Result<Option<String>> {
+    let out = conn
+        .run(&Command::new("docker").args(["inspect", container, "--format", "{{.Config.Image}}"]))
+        .await?;
+    Ok(out.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+}
+
+/// Fills `update_available` for each container by comparing local and registry digests, and
+/// `update_note` with the reason when that is not possible.
 pub async fn check_updates(conn: &Connection, containers: &mut [Container]) -> Result<()> {
-    let mut results: HashMap<String, Option<bool>> = HashMap::new();
-    for c in containers.iter() {
-        if results.contains_key(&c.image) {
+    let buildx = conn.run(&Command::new("docker").args(["buildx", "version"])).await?.success();
+    let mut results: HashMap<String, (Option<bool>, Option<&'static str>)> = HashMap::new();
+    for c in containers.iter_mut() {
+        let pinned = c.image.contains('@')
+            || configured_image(conn, &c.name).await?.is_some_and(|i| i.contains("@sha256:"));
+        if pinned {
+            c.update_available = None;
+            c.update_note = Some(NOTE_PINNED.into());
             continue;
         }
-        let verdict = if c.image.contains('@') {
-            None
-        } else {
-            match (local_digests(conn, &c.image).await?, remote_digest(conn, &c.image).await?) {
-                (Some(local), Some(remote)) => Some(!local.iter().any(|d| d.ends_with(&remote))),
-                _ => None,
-            }
-        };
-        results.insert(c.image.clone(), verdict);
-    }
-    for c in containers.iter_mut() {
-        c.update_available = results.get(&c.image).copied().flatten();
+        if !results.contains_key(&c.image) {
+            let verdict = if !buildx {
+                (None, Some(NOTE_NO_BUILDX))
+            } else {
+                match (local_digests(conn, &c.image).await?, remote_digest(conn, &c.image).await?) {
+                    (Some(local), Some(remote)) if !local.is_empty() => {
+                        (Some(!local.iter().any(|d| d.ends_with(&remote))), None)
+                    }
+                    (None, _) | (Some(_), Some(_)) => (None, Some(NOTE_NO_LOCAL)),
+                    (Some(_), None) => (None, Some(NOTE_REGISTRY)),
+                }
+            };
+            results.insert(c.image.clone(), verdict);
+        }
+        let (available, note) = results[&c.image];
+        c.update_available = available;
+        c.update_note = note.map(String::from);
     }
     Ok(())
 }

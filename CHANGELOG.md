@@ -2,6 +2,12 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.6.1
+
+- Docker: each host is its own bordered card with a coloured header, and columns line up across hosts
+- Docker: images pinned to a digest show Pinned, and Unknown now explains why on hover (docker buildx missing, locally built image or registry unreachable)
+- Patches and Docker: the status line is a coloured banner with a spinner while work runs, then green, amber or red when it finishes
+
 ## 0.6.0
 
 - APT and Kali scans detect updates that `apt upgrade` holds back, either phased by Ubuntu or kept back for new dependencies. They show as "+N held" next to the pending count, are labelled in Details with an explanation, and no longer count as patchable, so Patch is not offered for updates it cannot install

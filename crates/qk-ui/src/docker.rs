@@ -93,7 +93,7 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
         </div>
         <div class="toolbar">
             <button class="btn primary" on:click=scan_all disabled=move || busy.get()>"Scan Docker hosts"</button>
-            <span class="muted">{move || notice.get().unwrap_or_default()}</span>
+            <crate::patches::StatusLine notice=notice working=Signal::derive(move || busy.get()) />
         </div>
         <p class="muted small">"Scans are read-only. They compare local image digests with the registry without pulling. Mark Docker hosts in your host list."</p>
         <For each=move || hosts.get() key=|h| (h.host_id, h.docker_scan_at, h.containers.len()) let:h>
@@ -109,8 +109,8 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                     _ => view! { <span class="muted">{format!("Scanned {}", ago(h.docker_scan_at))}</span> }.into_any(),
                 };
                 view! {
-                    <section class="card">
-                        <div class="toolbar">
+                    <section class="card docker-host">
+                        <div class="toolbar host-head">
                             <h2>{h.name.clone()}</h2>
                             {status}
                             <span class="spacer"></span>
@@ -118,15 +118,21 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                                 on:click=move |_| scan_one(id, name_scan.clone())>"Scan"</button>
                         </div>
                         <Show when={let empty = h.containers.is_empty(); move || !empty}>
-                            <table class="table">
+                            <table class="table docker-table">
+                                <colgroup><col class="c-name"/><col class="c-image"/><col class="c-project"/><col class="c-state"/><col class="c-update"/><col class="c-action"/></colgroup>
                                 <thead><tr><th>"Container"</th><th>"Image"</th><th>"Project"</th><th>"State"</th><th>"Image update"</th><th></th></tr></thead>
                                 <tbody>
                                     {h.containers.clone().into_iter().map(|c| {
                                         let host = host_name.clone();
+                                        let note = c.update_note.clone();
+                                        let pinned = note.as_deref().is_some_and(|n| n.starts_with("Pinned"));
                                         let update = match c.update_available {
                                             Some(true) => view! { <span class="pill warn">"Available"</span> }.into_any(),
                                             Some(false) => view! { <span class="pill ok">"Current"</span> }.into_any(),
-                                            None => view! { <span class="muted" title="Registry could not be checked or image is pinned">"Unknown"</span> }.into_any(),
+                                            None if pinned => view! { <span class="pill held" title=note.clone().unwrap_or_default()>"Pinned"</span> }.into_any(),
+                                            None => view! {
+                                                <span class="muted unknown" title=note.clone().unwrap_or_else(|| "Scan again to check this image.".into())>"Unknown"</span>
+                                            }.into_any(),
                                         };
                                         let action = match (c.project.clone(), c.update_available, c.config_file.is_some()) {
                                             (Some(p), Some(true), true) => view! {

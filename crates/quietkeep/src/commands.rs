@@ -473,6 +473,7 @@ async fn docker_one(app: &AppHandle, h: Host) -> CmdResult<()> {
                     service: c.service,
                     config_file: c.config_file,
                     update_available: c.update_available,
+                    update_note: c.update_note,
                 })
                 .collect();
             let updates = rows.iter().filter(|c| c.update_available == Some(true)).count();

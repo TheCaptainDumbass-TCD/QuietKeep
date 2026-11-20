@@ -208,6 +208,8 @@ pub struct ContainerRow {
     pub service: Option<String>,
     pub config_file: Option<String>,
     pub update_available: Option<bool>,
+    #[serde(default)]
+    pub update_note: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

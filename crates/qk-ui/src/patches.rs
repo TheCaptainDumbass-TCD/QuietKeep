@@ -126,7 +126,7 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
 
         <div class="toolbar">
             <button class="btn primary" on:click=scan_all disabled=move || all_busy.get()>"Scan trusted hosts"</button>
-            <span class="muted">{move || notice.get().unwrap_or_default()}</span>
+            <StatusLine notice=notice working=Signal::derive(move || all_busy.get() || running.get().is_some() || scanning.with(|s| !s.is_empty())) />
         </div>
         <p class="muted small">"Scans are read-only. They list pending updates and check whether a reboot is needed, without sudo."</p>
 
@@ -282,5 +282,36 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                 </div>
             </div>
         </Show>
+    }
+}
+
+fn tone(msg: &str) -> &'static str {
+    let m = msg.to_lowercase();
+    if m.contains("refused") || m.contains("error") || m.contains("could not") || m.contains("failed:") || m.contains("timed out") {
+        return "bad";
+    }
+    let words: Vec<&str> = m.split_whitespace().collect();
+    if words.windows(2).any(|w| w[1].starts_with("failed") && w[0].chars().all(|c| c.is_ascii_digit()) && w[0] != "0") {
+        return "warn";
+    }
+    "ok"
+}
+
+/// Status banner for long-running work: blue with a spinner while working, then green, amber or red.
+#[component]
+pub fn StatusLine(notice: RwSignal<Option<String>>, working: Signal<bool>) -> impl IntoView {
+    view! {
+        {move || {
+            let msg = notice.get();
+            if working.get() {
+                let text = msg.unwrap_or_else(|| "Working...".into());
+                view! { <div class="status-line working"><span class="spinner"></span><span>{text}</span></div> }.into_any()
+            } else if let Some(m) = msg {
+                let class = format!("status-line {}", tone(&m));
+                view! { <div class=class><span>{m}</span></div> }.into_any()
+            } else {
+                view! { <span></span> }.into_any()
+            }
+        }}
     }
 }

@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0004_metrics.sql"),
     include_str!("migrations/0005_access.sql"),
     include_str!("migrations/0006_held.sql"),
+    include_str!("migrations/0007_update_note.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -70,6 +71,7 @@ pub struct ContainerRow {
     pub service: Option<String>,
     pub config_file: Option<String>,
     pub update_available: Option<bool>,
+    pub update_note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -286,12 +288,13 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
         {
             let mut ins = tx.prepare(
                 "INSERT OR REPLACE INTO containers
-                 (host_id, name, image, state, status, project, service, config_file, update_available)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (host_id, name, image, state, status, project, service, config_file, update_available, update_note)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )?;
             for c in containers {
                 ins.execute(params![
-                    id, c.name, c.image, c.state, c.status, c.project, c.service, c.config_file, c.update_available
+                    id, c.name, c.image, c.state, c.status, c.project, c.service, c.config_file, c.update_available,
+                    c.update_note
                 ])?;
             }
         }
@@ -330,7 +333,7 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
             })?
             .collect::<std::result::Result<_, _>>()?;
         let mut c_stmt = self.conn.prepare(
-            "SELECT name, image, state, status, project, service, config_file, update_available
+            "SELECT name, image, state, status, project, service, config_file, update_available, update_note
              FROM containers WHERE host_id = ?1 ORDER BY project IS NULL, project, name",
         )?;
         for h in &mut hosts {
@@ -345,6 +348,7 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
                         service: r.get(5)?,
                         config_file: r.get(6)?,
                         update_available: r.get(7)?,
+                        update_note: r.get(8)?,
                     })
                 })?
                 .collect::<std::result::Result<_, _>>()?;
@@ -659,6 +663,7 @@ mod tests {
             service: Some("web".into()),
             config_file: Some("/srv/web/compose.yaml".into()),
             update_available: Some(true),
+            update_note: None,
         };
         store.record_docker(id, &[c.clone()]).unwrap();
         let d = &store.docker_status().unwrap()[0];
