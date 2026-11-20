@@ -16,6 +16,8 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
     let selected = RwSignal::new(None::<Vulnerability>);
     let affected = RwSignal::new(Vec::<api::Affected>::new());
     let show_unchecked = RwSignal::new(false);
+    let focus_ctx = use_context::<crate::PatchFocus>();
+    let panel_ctx = use_context::<RwSignal<crate::Panel>>();
     let osv = RwSignal::new(None::<api::OsvState>);
     let osv_asking = RwSignal::new(false);
     let osv_busy = RwSignal::new(false);
@@ -198,7 +200,7 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                     .into_iter()
                     .filter_map(|mut a| {
                         if !unchecked_too {
-                            a.hosts.retain(|h| h.status != "unchecked");
+                            a.hosts.retain(|h| h.status != "unchecked" && h.status != "minor");
                         }
                         (!a.hosts.is_empty()).then_some(a)
                     })
@@ -237,7 +239,10 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                                         ids.dedup();
                                         ids.len()
                                     };
-                                    let (patch, nofix, unchecked) = (host_status("patch"), host_status("nofix"), host_status("unchecked"));
+                                    let (patch, nofix, unchecked, minor) = (host_status("patch"), host_status("nofix"), host_status("unchecked"), host_status("minor"));
+                                    let mut patch_ids: Vec<i64> = cves.iter().flat_map(|a| a.hosts.iter()).filter(|h| h.status == "patch").map(|h| h.host_id).collect();
+                                    patch_ids.sort_unstable();
+                                    patch_ids.dedup();
                                     let ransomware = cves.iter().filter(|a| a.known_ransomware).count();
                                     let count = cves.len();
                                     let k1 = key.clone();
@@ -251,6 +256,18 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                                                 {(patch > 0).then(|| view! { <span class="pill warn" title="The installed version is older than the fixed version. Patch these hosts.">{format!("Patch {patch} hosts")}</span> })}
                                                 {(nofix > 0).then(|| view! { <span class="pill bad" title="The tracker lists the package as affected and no fix is released yet">{format!("No fix yet on {nofix}")}</span> })}
                                                 {(unchecked > 0).then(|| view! { <span class="pill held" title="No tracker data for these hosts, so only the product is known to be installed">{format!("Not version checked on {unchecked}")}</span> })}
+                                                {(minor > 0).then(|| view! { <span class="pill held" title="The distribution rates this unimportant, usually because its build cannot be exploited. Open the Debian or Ubuntu tracker from the CVE details to read why.">{format!("Rated unimportant on {minor}")}</span> })}
+                                                {(patch > 0).then(|| {
+                                                    let ids = patch_ids.clone();
+                                                    view! {
+                                                        <button class="btn small warn" title="Open Patches with only these hosts, then use Patch or Patch all"
+                                                            on:click=move |ev| {
+                                                                ev.stop_propagation();
+                                                                if let Some(f) = focus_ctx { f.0.set(ids.clone()); }
+                                                                if let Some(p) = panel_ctx { p.set(crate::Panel::Patches); }
+                                                            }>"Patch on Patches page"</button>
+                                                    }
+                                                })}
                                             </td>
                                             <td>{if ransomware > 0 {
                                                 view! { <span class="pill bad">{format!("{ransomware} known")}</span> }.into_any()
@@ -264,6 +281,7 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                                                 let per_host = a.hosts.iter().map(|h| match (h.status.as_str(), &h.fixed_version) {
                                                     ("patch", Some(f)) => format!("{}: {} {}, fixed in {f}{}", h.host, h.source, h.version, if h.update_pending { ", update ready" } else { "" }),
                                                     ("nofix", _) => format!("{}: {} {}, no fix yet", h.host, h.source, h.version),
+                                                    ("minor", _) => format!("{}: {} {}, rated unimportant by the distribution", h.host, h.source, h.version),
                                                     _ => format!("{}: {} {}, not version checked", h.host, h.source, h.version),
                                                 }).collect::<Vec<_>>().join("; ");
                                                 view! {
@@ -342,6 +360,8 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                         <div class="modal-actions">
                             <button class="btn" on:click=open("nvd") title="Opens nvd.nist.gov in your browser">"Open on NVD"</button>
                             <button class="btn" on:click=open("cve") title="Opens cve.org in your browser">"Open on CVE.org"</button>
+                            <button class="btn" on:click=open("debian") title="Opens Debian's security tracker, which shows the status for each Debian release">"Debian tracker"</button>
+                            <button class="btn" on:click=open("ubuntu") title="Opens Ubuntu's CVE page, which shows the status for each Ubuntu release">"Ubuntu tracker"</button>
                             <button class="btn primary" on:click=move |_| selected.set(None)>"Close"</button>
                         </div>
                     </div>

@@ -64,12 +64,18 @@ impl Panel {
     }
 }
 
+/// Hosts the Patches page should show, set when another page sends the user there.
+#[derive(Clone, Copy)]
+pub struct PatchFocus(pub RwSignal<Vec<i64>>);
+
 #[component]
 fn App() -> impl IntoView {
     let theme = RwSignal::new(Theme::load());
     Effect::new(move |_| theme.get().apply());
 
     let panel = RwSignal::new(Panel::Dashboard);
+    provide_context(panel);
+    provide_context(PatchFocus(RwSignal::new(Vec::new())));
     let panels = RwSignal::new(layout::load());
     provide_context(panels);
     Effect::new(move |_| {

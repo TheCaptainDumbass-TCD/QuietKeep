@@ -22,6 +22,9 @@ pub struct OsvEntry {
     pub package: String,
     /// First fixed version. `None` means no fix is released yet.
     pub fixed: Option<String>,
+    /// The distribution's urgency rating, such as `unimportant`.
+    #[serde(default)]
+    pub urgency: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +45,8 @@ struct RecordAffected {
     package: RecordPackage,
     #[serde(default)]
     ranges: Vec<RecordRange>,
+    #[serde(default)]
+    ecosystem_specific: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -87,7 +92,13 @@ fn parse_record(bytes: &[u8]) -> Result<Vec<OsvEntry>> {
                 .filter_map(|e| e.get("fixed").and_then(|f| f.as_str()))
                 .max_by(|x, y| qk_core::debversion::compare(x, y))
                 .map(str::to_string);
-            OsvEntry { ecosystem: a.package.ecosystem, package: a.package.name, fixed }
+            let urgency = a
+                .ecosystem_specific
+                .as_ref()
+                .and_then(|e| e.get("urgency"))
+                .and_then(|u| u.as_str())
+                .map(|u| u.chars().take(40).collect());
+            OsvEntry { ecosystem: a.package.ecosystem, package: a.package.name, fixed, urgency }
         })
         .collect())
 }
@@ -175,12 +186,14 @@ mod tests {
     fn records_keep_tracked_ecosystems_and_fixed_versions() {
         let json = br#"{"id":"UBUNTU-CVE-2021-3156","affected":[
             {"package":{"name":"sudo","ecosystem":"Ubuntu:Pro:14.04:LTS"},"ranges":[{"events":[{"introduced":"0"},{"fixed":"1.8.9"}]}]},
-            {"package":{"name":"sudo","ecosystem":"Ubuntu:20.04:LTS"},"ranges":[{"events":[{"introduced":"0"},{"fixed":"1.8.31-1ubuntu1.2"}]}]},
+            {"package":{"name":"sudo","ecosystem":"Ubuntu:20.04:LTS"},"ranges":[{"events":[{"introduced":"0"},{"fixed":"1.8.31-1ubuntu1.2"}]}],"ecosystem_specific":{"urgency":"unimportant"}},
             {"package":{"name":"linux-aws-6.8","ecosystem":"Ubuntu:22.04:LTS"},"ranges":[{"events":[{"introduced":"0"}]}]}]}"#;
         let e = parse_record(json).unwrap();
         assert_eq!(e.len(), 2);
         assert_eq!(e[0].fixed.as_deref(), Some("1.8.31-1ubuntu1.2"));
         assert_eq!(e[1].fixed, None);
+        assert_eq!(e[0].urgency.as_deref(), Some("unimportant"));
+        assert_eq!(e[1].urgency, None);
         assert_eq!(ecosystems(Some("debian"), Some("13")), vec!["Debian:13"]);
         assert_eq!(ecosystems(Some("ubuntu"), Some("22.04"))[0], "Ubuntu:22.04:LTS");
         assert!(ecosystems(Some("kali"), Some("2026.3")).is_empty());

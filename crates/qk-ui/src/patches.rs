@@ -46,9 +46,14 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
     let bulk_confirm = RwSignal::new(false);
     let bulk_running = RwSignal::new(false);
     let label = |r: &PatchStatus| crate::hosts::os_label(r.os_name.as_deref(), &r.os_type);
+    let focus = use_context::<crate::PatchFocus>().map(|f| f.0).unwrap_or_else(|| RwSignal::new(Vec::new()));
     let visible = move || {
         let f = os_filter.get();
-        rows.get().into_iter().filter(|r| f.is_empty() || label(r) == f).collect::<Vec<_>>()
+        let only = focus.get();
+        rows.get()
+            .into_iter()
+            .filter(|r| (f.is_empty() || label(r) == f) && (only.is_empty() || only.contains(&r.host_id)))
+            .collect::<Vec<_>>()
     };
     let os_options = move || {
         let mut v: Vec<String> = rows.with(|r| r.iter().map(label).collect());
@@ -194,6 +199,10 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                 title=move || if patchable().is_empty() { "No trusted host in this view has updates to install" } else { "Patch the hosts in this view one at a time" }>
                 {move || format!("Patch all ({})", patchable().len())}
             </button>
+            <Show when=move || !focus.with(|f| f.is_empty())>
+                <span class="pill warn">{move || format!("Showing {} hosts from Security", focus.with(|f| f.len()))}</span>
+                <button class="btn small" on:click=move |_| focus.set(Vec::new()) title="Show every host again">"Show all hosts"</button>
+            </Show>
             <select title="Show only hosts running this OS" prop:value=move || os_filter.get()
                 on:change=move |ev| os_filter.set(event_target_value(&ev))>
                 <option value="">"All operating systems"</option>

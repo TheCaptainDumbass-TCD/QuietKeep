@@ -64,7 +64,8 @@ pub struct HostMatch {
     pub update_pending: bool,
     /// `patch`: the installed version is older than the fixed one. `nofix`: the tracker
     /// lists the package as affected with no fix released. `unchecked`: no tracker data
-    /// for this host, so only the product is known to be installed.
+    /// for this host, so only the product is known to be installed. `minor`: the
+    /// distribution rates it unimportant, usually because its build is not exploitable.
     pub status: String,
     pub fixed_version: Option<String>,
 }
@@ -119,7 +120,8 @@ fn rank(status: &str) -> u8 {
     match status {
         "patch" => 3,
         "nofix" => 2,
-        _ => 1,
+        "unchecked" => 1,
+        _ => 0,
     }
 }
 
@@ -135,9 +137,13 @@ fn evaluate(p: &HostPkg, cve: &str, osv: Option<&OsvCache>) -> Option<(String, O
     let (src, installed) = tracked_source(p);
     let mut result: Option<(String, Option<String>)> = None;
     for e in entries.iter().filter(|e| e.package == src && ecos.contains(&e.ecosystem)) {
+        let minor = e.urgency.as_deref().is_some_and(|u| u.starts_with("unimportant"));
         let next = match &e.fixed {
+            None if minor => ("minor".to_string(), None),
             None => ("nofix".to_string(), None),
-            Some(f) if debversion::compare(&installed, f) == Ordering::Less => ("patch".to_string(), Some(f.clone())),
+            Some(f) if debversion::compare(&installed, f) == Ordering::Less => {
+                (if minor { "minor" } else { "patch" }.to_string(), Some(f.clone()))
+            }
             Some(_) => continue,
         };
         if result.as_ref().is_none_or(|r| rank(&next.0) > rank(&r.0)) {
@@ -245,7 +251,7 @@ mod tests {
     }
 
     fn entry(eco: &str, package: &str, fixed: Option<&str>) -> OsvEntry {
-        OsvEntry { ecosystem: eco.into(), package: package.into(), fixed: fixed.map(str::to_string) }
+        OsvEntry { ecosystem: eco.into(), package: package.into(), fixed: fixed.map(str::to_string), urgency: None }
     }
 
     #[test]
@@ -291,6 +297,10 @@ mod tests {
         assert_eq!(st, vec![(1, "nofix"), (4, "unchecked")]);
         assert_eq!(r.iter().find(|a| a.cve_id == "CVE-2021-23017").unwrap().hosts[0].status, "unchecked");
         assert!(affected(&catalog, &[], &[], &[], Some(&cache)).is_empty());
+        let mut minor = cache.clone();
+        minor.cves.get_mut("CVE-2021-3156").unwrap()[0].urgency = Some("unimportant".into());
+        let r = affected(&catalog, &packages, &[], &[], Some(&minor));
+        assert_eq!(r.iter().find(|a| a.cve_id == "CVE-2021-3156").unwrap().hosts[0].status, "minor");
         assert_eq!(trackable_cves(&catalog).len(), 3);
         let none = affected(&catalog, &packages, &[], &[], None);
         assert!(none.iter().all(|a| a.hosts.iter().all(|h| h.status == "unchecked")));

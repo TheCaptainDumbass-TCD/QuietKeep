@@ -1333,6 +1333,8 @@ pub fn open_cve_page(cve: String, site: String) -> CmdResult<()> {
     let url = match site.as_str() {
         "nvd" => format!("https://nvd.nist.gov/vuln/detail/{cve}"),
         "cve" => format!("https://www.cve.org/CVERecord?id={cve}"),
+        "debian" => format!("https://security-tracker.debian.org/tracker/{cve}"),
+        "ubuntu" => format!("https://ubuntu.com/security/{cve}"),
         _ => return Err("Unknown site.".into()),
     };
     std::process::Command::new("xdg-open")

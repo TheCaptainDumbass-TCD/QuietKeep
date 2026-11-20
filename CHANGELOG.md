@@ -2,6 +2,13 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.12.1
+
+- Security: findings the distribution rates unimportant, such as an OpenSSH bug that only affects builds without PAM, are labeled "Rated unimportant" and hidden by default instead of shown as No fix yet
+- Security: Patch on Patches page opens Patches with only the hosts that need the fix, where Patch or Patch all installs it
+- Security: CVE details have Debian tracker and Ubuntu tracker buttons that show each release's status
+- Click Update fixed versions once after upgrading to pick up the urgency ratings
+
 ## 0.12.0
 
 - Security: Check fixed versions looks up the Debian and Ubuntu security tracker records for the catalog CVEs at api.osv.dev, after asking permission. Only public CVE IDs are sent
