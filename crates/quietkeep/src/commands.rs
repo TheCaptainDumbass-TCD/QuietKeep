@@ -240,6 +240,7 @@ async fn scan_one(app: &AppHandle, h: Host) -> CmdResult<()> {
             let security = r.updates.iter().filter(|u| u.security).count();
             let mut s = store(&state);
             s.record_scan(h.id, &r.updates, r.reboot_required).map_err(err)?;
+            s.record_packages(h.id, &r.packages).map_err(err)?;
             let reboot = if r.reboot_required { ", reboot required" } else { "" };
             s.log_activity(
                 "scan.completed",
@@ -732,6 +733,28 @@ pub fn kev_search(app: AppHandle, filter: qk_intel::Filter) -> CmdResult<Vec<qk_
         .map_err(err)?
         .map(|c| qk_intel::filter(&c, &filter, 200))
         .unwrap_or_default())
+}
+
+/// Catalog entries whose product is installed on a saved host, from the package lists
+/// and container images collected by earlier scans. Uses only local data.
+#[tauri::command]
+pub fn kev_affected(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<qk_intel::affected::Affected>> {
+    let Some(catalog) = qk_intel::load_cache(&kev_cache(&app)?).map_err(err)? else {
+        return Ok(Vec::new());
+    };
+    let s = store(&state);
+    let packages = s.all_packages().map_err(err)?;
+    let images: Vec<(i64, String, String)> = s
+        .docker_status()
+        .map_err(err)?
+        .into_iter()
+        .flat_map(|h| {
+            let (id, name) = (h.host_id, h.name);
+            h.containers.into_iter().map(move |c| (id, name.clone(), c.image))
+        })
+        .collect();
+    let pending = s.pending_packages().map_err(err)?;
+    Ok(qk_intel::affected::affected(&catalog, &packages, &images, &pending))
 }
 
 fn record_telemetry(app: &AppHandle, id: i64, t: &qk_collect::telemetry::Telemetry) {

@@ -154,6 +154,7 @@ fn main() {
             commands::docker_move_to_compose,
             commands::docker_remove_rollback,
             commands::docker_snooze_major,
+            commands::kev_affected,
             commands::docker_unused_images,
             commands::docker_remove_images,
             commands::kev_refresh,

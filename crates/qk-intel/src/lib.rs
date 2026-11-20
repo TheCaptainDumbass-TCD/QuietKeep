@@ -1,6 +1,7 @@
 //! CISA Known Exploited Vulnerabilities catalog. The feed is downloaded only when the
 //! user allows it, then cached locally so the catalog stays usable offline.
 
+pub mod affected;
 pub mod registry;
 
 use std::collections::HashMap;

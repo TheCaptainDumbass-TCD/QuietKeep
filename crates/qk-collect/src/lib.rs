@@ -10,6 +10,40 @@ use serde::Serialize;
 pub struct ScanResult {
     pub updates: Vec<PackageUpdate>,
     pub reboot_required: bool,
+    /// Installed packages as (name, version). Empty when the inventory could not be read.
+    pub packages: Vec<(String, String)>,
+}
+
+pub fn packages_command(os: OsType) -> Command {
+    match os {
+        OsType::Apt | OsType::Kali | OsType::Proxmox => Command::new("env").args([
+            "LC_ALL=C",
+            "dpkg-query",
+            "-W",
+            "-f=${db:Status-Abbrev}\t${Package}\t${Version}\n",
+        ]),
+        OsType::Pacman => Command::new("pacman").arg("-Q"),
+    }
+}
+
+pub fn parse_packages(os: OsType, text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| match os {
+            OsType::Pacman => {
+                let mut it = l.split_whitespace();
+                Some((it.next()?.to_string(), it.next()?.to_string()))
+            }
+            _ => {
+                let mut it = l.split('\t');
+                let status = it.next()?;
+                if !status.starts_with("ii") {
+                    return None;
+                }
+                Some((it.next()?.trim().to_string(), it.next()?.trim().to_string()))
+            }
+        })
+        .filter(|(n, v)| !n.is_empty() && !v.is_empty())
+        .collect()
 }
 
 /// Proxmox kernels do not always write /var/run/reboot-required, so compare the running
@@ -66,7 +100,13 @@ pub async fn scan(conn: &Connection, os: OsType) -> Result<ScanResult> {
         }
     }
     let reboot_required = conn.run(&reboot_check_command(os)).await?.success();
-    Ok(ScanResult { updates, reboot_required })
+    let inventory = conn.run(&packages_command(os)).await?;
+    let packages = if inventory.success() {
+        parse_packages(os, &String::from_utf8_lossy(&inventory.stdout))
+    } else {
+        Vec::new()
+    };
+    Ok(ScanResult { updates, reboot_required, packages })
 }
 
 pub const SUDOERS_PATH: &str = "/etc/sudoers.d/quietkeep";
@@ -222,3 +262,18 @@ mod tests {
 pub mod docker;
 pub mod telemetry;
 pub mod access;
+
+#[cfg(test)]
+mod package_tests {
+    use super::*;
+
+    #[test]
+    fn installed_packages_are_parsed() {
+        let apt = "ii \tsudo\t1.9.16p2-3\nrc \told-pkg\t1.0\nii \topenssh-server\t1:10.0p1-7\n";
+        assert_eq!(
+            parse_packages(OsType::Apt, apt),
+            vec![("sudo".into(), "1.9.16p2-3".into()), ("openssh-server".into(), "1:10.0p1-7".into())]
+        );
+        assert_eq!(parse_packages(OsType::Pacman, "sudo 1.9.16-1\nbash 5.2\n").len(), 2);
+    }
+}

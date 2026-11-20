@@ -20,6 +20,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0009_pins.sql"),
     include_str!("migrations/0010_finished.sql"),
     include_str!("migrations/0011_snooze.sql"),
+    include_str!("migrations/0012_packages.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -224,6 +225,40 @@ impl Store {
     }
 
     /// Records a failed scan without discarding the last known pending updates.
+    /// Replaces the installed package list for a host. An empty list keeps the old one,
+    /// so a failed inventory never clears known packages.
+    pub fn record_packages(&mut self, id: i64, packages: &[(String, String)]) -> Result<()> {
+        if packages.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM host_packages WHERE host_id = ?1", [id])?;
+        {
+            let mut ins = tx.prepare("INSERT OR REPLACE INTO host_packages (host_id, name, version) VALUES (?1, ?2, ?3)")?;
+            for (name, version) in packages {
+                ins.execute(rusqlite::params![id, name, version])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Packages with a pending update on each host, as (host id, package).
+    pub fn pending_packages(&self) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self.conn.prepare("SELECT host_id, name FROM pending_updates")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Installed packages of every host, as (host id, host name, package, version).
+    pub fn all_packages(&self) -> Result<Vec<(i64, String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT h.id, h.name, p.name, p.version FROM host_packages p JOIN hosts h ON h.id = p.host_id ORDER BY h.name, p.name",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     pub fn record_scan_error(&mut self, id: i64, message: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE hosts SET last_scan_at = unixepoch(), scan_error = ?1 WHERE id = ?2",

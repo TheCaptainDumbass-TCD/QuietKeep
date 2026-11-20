@@ -318,6 +318,31 @@ pub async fn open_cve_page(cve: String, site: &'static str) -> Result<(), String
     invoke("open_cve_page", args(&A { cve, site })).await
 }
 
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct HostMatch {
+    pub host_id: i64,
+    pub host: String,
+    pub source: String,
+    pub version: String,
+    #[serde(default)]
+    pub update_pending: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Affected {
+    pub cve_id: String,
+    pub vendor_project: String,
+    pub product: String,
+    pub vulnerability_name: String,
+    pub date_added: String,
+    pub known_ransomware: bool,
+    pub hosts: Vec<HostMatch>,
+}
+
+pub async fn kev_affected() -> Result<Vec<Affected>, String> {
+    invoke("kev_affected", JsValue::UNDEFINED).await
+}
+
 pub async fn kev_state() -> Result<KevState, String> {
     invoke("kev_state", JsValue::UNDEFINED).await
 }

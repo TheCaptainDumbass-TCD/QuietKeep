@@ -14,6 +14,18 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
     let busy = RwSignal::new(false);
     let asking = RwSignal::new(false);
     let selected = RwSignal::new(None::<Vulnerability>);
+    let affected = RwSignal::new(Vec::<api::Affected>::new());
+    let pending_only = RwSignal::new(true);
+    let expanded = RwSignal::new(None::<String>);
+    let show_cve = move |cve: String| {
+        let filter = KevFilter { search: cve.clone(), linux_only: false, ransomware_only: false };
+        spawn_local(async move {
+            match api::kev_search(filter).await {
+                Ok(v) => selected.set(v.into_iter().find(|v| v.cve_id == cve)),
+                Err(e) => notice.set(Some(e)),
+            }
+        })
+    };
 
     let run_search = move || {
         let filter = KevFilter {
@@ -34,6 +46,10 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                 Ok(s) => {
                     state.set(Some(s));
                     run_search();
+                    match api::kev_affected().await {
+                        Ok(a) => affected.set(a),
+                        Err(e) => notice.set(Some(e)),
+                    }
                 }
                 Err(e) => notice.set(Some(e)),
             }
@@ -104,6 +120,104 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                 <button class="btn small" on:click=revoke>"Stop downloads"</button>
             </Show>
         </div>
+        <section class="card">
+            <h2>"Affecting your hosts"</h2>
+            <p class="muted">"Known exploited vulnerabilities in software installed on the hosts saved in QuietKeep, from the package lists and container images of their last scan. "
+               "The catalog does not list affected versions, so a match means the product is installed. Install pending security updates on those hosts and check each CVE's details."</p>
+            <div class="toolbar">
+                <label title="Hosts where an update for the product is waiting are the ones to patch first">
+                    <input type="checkbox" prop:checked=move || pending_only.get()
+                        on:change=move |ev| pending_only.set(event_target_checked(&ev)) />
+                    " Only hosts with a pending update for the product"</label>
+                <span class="muted">{move || {
+                    let all = affected.with(|a| a.len());
+                    let pend = affected.with(|a| a.iter().filter(|x| x.hosts.iter().any(|h| h.update_pending)).count());
+                    format!("{pend} of {all} matches have a pending update")
+                }}</span>
+            </div>
+            {move || {
+                let has_catalog = state.with(|s| s.as_ref().is_some_and(|s| s.summary.is_some()));
+                let only = pending_only.get();
+                let all_empty = affected.with(|a| a.is_empty());
+                let list: Vec<api::Affected> = affected
+                    .get()
+                    .into_iter()
+                    .filter_map(|mut a| {
+                        if only {
+                            a.hosts.retain(|h| h.update_pending);
+                        }
+                        (!a.hosts.is_empty()).then_some(a)
+                    })
+                    .collect();
+                if !has_catalog {
+                    view! { <p class="muted">"Download the catalog to check your hosts."</p> }.into_any()
+                } else if list.is_empty() && !all_empty {
+                    view! { <p class="muted">"No matched host has a pending update for these products. Clear the checkbox to see every match."</p> }.into_any()
+                } else if list.is_empty() {
+                    view! { <p class="muted">"No matches. Hosts are checked after a patch scan collects their installed packages, so scan any host that is new or not scanned since 0.11.0."</p> }.into_any()
+                } else {
+                    let mut groups: Vec<(String, Vec<api::Affected>)> = Vec::new();
+                    for a in list {
+                        let key = format!("{} {}", a.vendor_project, a.product);
+                        match groups.iter_mut().find(|(k, _)| *k == key) {
+                            Some((_, g)) => g.push(a),
+                            None => groups.push((key, vec![a])),
+                        }
+                    }
+                    view! {
+                        <table class="table">
+                            <thead><tr><th>"Product"</th><th>"Known exploited"</th><th>"Hosts"</th><th>"Updates"</th><th>"Ransomware"</th></tr></thead>
+                            <tbody>
+                                {groups.into_iter().map(|(key, cves)| {
+                                    let mut hosts: Vec<api::HostMatch> = Vec::new();
+                                    for h in cves.iter().flat_map(|a| a.hosts.iter()) {
+                                        if !hosts.iter().any(|x| x.host_id == h.host_id) {
+                                            hosts.push(h.clone());
+                                        }
+                                    }
+                                    let names = hosts.iter().map(|h| h.host.clone()).collect::<Vec<_>>().join(", ");
+                                    let detail = hosts.iter().map(|h| format!("{}: {} {}", h.host, h.source, h.version)).collect::<Vec<_>>().join("\n");
+                                    let pending = hosts.iter().filter(|h| h.update_pending).count();
+                                    let ransomware = cves.iter().filter(|a| a.known_ransomware).count();
+                                    let count = cves.len();
+                                    let k1 = key.clone();
+                                    let k2 = key.clone();
+                                    view! {
+                                        <tr class="clickable" title="Click to list the CVEs" on:click=move |_| expanded.update(|e| *e = if e.as_deref() == Some(k1.as_str()) { None } else { Some(k1.clone()) })>
+                                            <td>{let k3 = key.clone(); move || if expanded.with(|e| e.as_deref() == Some(k3.as_str())) { "\u{25BE} " } else { "\u{25B8} " }}{key.clone()}</td>
+                                            <td>{count}</td>
+                                            <td title=detail>{names}</td>
+                                            <td>{if pending > 0 {
+                                                view! { <span class="pill warn" title="Install updates on these hosts from the Patches page">{format!("Pending on {pending}")}</span> }.into_any()
+                                            } else {
+                                                view! { <span class="muted">"None pending"</span> }.into_any()
+                                            }}</td>
+                                            <td>{if ransomware > 0 {
+                                                view! { <span class="pill bad">{format!("{ransomware} known")}</span> }.into_any()
+                                            } else {
+                                                view! { <span class="muted">"Unknown"</span> }.into_any()
+                                            }}</td>
+                                        </tr>
+                                        <Show when=move || expanded.with(|e| e.as_deref() == Some(k2.as_str()))>
+                                            {cves.clone().into_iter().map(|a| {
+                                                let cve = a.cve_id.clone();
+                                                view! {
+                                                    <tr class="clickable sub" title="Click for details" on:click=move |_| show_cve(cve.clone())>
+                                                        <td class="mono">{a.cve_id.clone()}</td>
+                                                        <td colspan="3">{a.vulnerability_name.clone()}</td>
+                                                        <td class="muted">{a.date_added.clone()}</td>
+                                                    </tr>
+                                                }
+                                            }).collect_view()}
+                                        </Show>
+                                    }
+                                }).collect_view()}
+                            </tbody>
+                        </table>
+                    }.into_any()
+                }
+            }}
+        </section>
         <div class="toolbar">
             <input class="search" type="search" placeholder="Search CVE, vendor, product"
                 prop:value=move || search.get()

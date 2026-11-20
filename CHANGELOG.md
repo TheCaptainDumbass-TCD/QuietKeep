@@ -2,6 +2,13 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.11.0
+
+- Security: Affecting your hosts lists known exploited vulnerabilities for software installed on the hosts saved in QuietKeep, grouped by product. Click a product to see its CVEs and click a CVE for details
+- It follows the host list: new hosts are checked after their first patch scan and removed hosts drop out
+- By default it shows only products with a pending update on the matched hosts, which are the ones to patch first
+- Patch scans now also record installed packages (read only, no sudo)
+
 ## 0.10.0
 
 - Docker: database containers with a new major release get a Details button. It explains why there is no one click upgrade, how a safe upgrade works and how long the current PostgreSQL version gets security fixes
