@@ -28,10 +28,10 @@ Early development. The first release is agentless and uses SSH. An optional agen
 ## Install
 
 ```sh
-sudo apt install ./QuietKeep_0.1.0_amd64.deb
+sudo apt install ./quietkeep_0.2.0_amd64.deb
 ```
 
-Tested on clean Debian 13 and Ubuntu 24.04 systems. Removing the package with `sudo apt remove quiet-keep` leaves your data in place.
+Tested on clean Debian 13 and Ubuntu 24.04 systems. Removing the package with `sudo apt remove quietkeep` leaves your data in place.
 
 ## Data
 

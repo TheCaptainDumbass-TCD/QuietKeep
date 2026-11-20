@@ -188,3 +188,5 @@ p.small { font-size: 12px; margin: 4px 0 12px; }
 .search { flex: 0 1 320px; padding: 6px 10px; border-radius: 6px; background: rgba(127, 127, 127, 0.12); color: inherit;
   border: 1px solid rgba(127, 127, 127, 0.3); }
 .toolbar label { display: flex; align-items: center; gap: 4px; font-size: 13px; }
+
+.about th { width: 180px; text-align: left; font-weight: 600; }

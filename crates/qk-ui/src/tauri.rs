@@ -15,11 +15,15 @@ pub async fn invoke<T: DeserializeOwned>(cmd: &str, args: JsValue) -> Result<T, 
     serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct AppInfo {
-    #[allow(dead_code)]
     pub name: String,
     pub version: String,
+    pub commit: String,
+    pub identifier: String,
+    pub platform: String,
+    pub data_dir: String,
+    pub schema_version: i64,
 }
 
 pub async fn app_info() -> Result<AppInfo, String> {

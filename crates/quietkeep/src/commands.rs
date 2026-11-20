@@ -35,11 +35,24 @@ pub fn store<'a>(state: &'a State<'_, AppState>) -> std::sync::MutexGuard<'a, St
 pub struct AppInfo {
     name: &'static str,
     version: &'static str,
+    commit: &'static str,
+    identifier: String,
+    platform: String,
+    data_dir: String,
+    schema_version: i64,
 }
 
 #[tauri::command]
-pub fn app_info() -> AppInfo {
-    AppInfo { name: "QuietKeep", version: env!("CARGO_PKG_VERSION") }
+pub fn app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
+    AppInfo {
+        name: "QuietKeep",
+        version: env!("CARGO_PKG_VERSION"),
+        commit: env!("QK_BUILD_COMMIT"),
+        identifier: app.config().identifier.clone(),
+        platform: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        data_dir: app.path().app_data_dir().map(|p| p.display().to_string()).unwrap_or_default(),
+        schema_version: store(&state).schema_version().unwrap_or(0),
+    }
 }
 
 #[tauri::command]

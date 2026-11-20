@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/qk-core", "crates/qk-store", "crates/qk-ssh", "crates/qk-collect", "crates/qk-jobs", "crates/qk-auth", "crates/qk-intel", "crates/quietkeep"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Dennis Ayotte"]
