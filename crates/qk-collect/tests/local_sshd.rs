@@ -17,7 +17,7 @@ async fn scans_apt_host() {
         eprintln!("skipped: local sshd not configured");
         return;
     };
-    let identity = qk_ssh::load_or_create_identity(std::path::Path::new(&key)).unwrap();
+    let identity = qk_ssh::load_or_create_identity(std::path::Path::new(&key), None).unwrap().key;
     let target = Target {
         address: "127.0.0.1".into(),
         port: port.parse().unwrap(),
