@@ -262,7 +262,7 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                     </tr>
                 </thead>
                 <tbody>
-                    <For each=move || hosts.get() key=|h| (h.id, h.host_key.clone()) let:host>
+                    <For each=move || hosts.get() key=|h| (h.id, h.host_key.clone(), h.access_ok) let:host>
                         {
                             let h = host.clone();
                             let h_ssh = host.clone();
