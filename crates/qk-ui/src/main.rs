@@ -1,0 +1,91 @@
+mod tauri;
+mod theme;
+
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+
+use theme::{Theme, ThemeSwitcher};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Panel {
+    Dashboard,
+    Hosts,
+    Patches,
+    Docker,
+    Security,
+    Settings,
+}
+
+impl Panel {
+    const ALL: [Panel; 6] = [
+        Panel::Dashboard,
+        Panel::Hosts,
+        Panel::Patches,
+        Panel::Docker,
+        Panel::Security,
+        Panel::Settings,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Panel::Dashboard => "Dashboard",
+            Panel::Hosts => "Hosts",
+            Panel::Patches => "Patches",
+            Panel::Docker => "Docker",
+            Panel::Security => "Security",
+            Panel::Settings => "Settings",
+        }
+    }
+}
+
+#[component]
+fn App() -> impl IntoView {
+    let theme = RwSignal::new(Theme::load());
+    Effect::new(move |_| theme.get().apply());
+
+    let panel = RwSignal::new(Panel::Dashboard);
+    let version = RwSignal::new(String::new());
+    spawn_local(async move {
+        if let Ok(info) = tauri::app_info().await {
+            version.set(info.version);
+        }
+    });
+
+    view! {
+        <div class="shell">
+            <aside class="sidebar">
+                <div class="brand">"QuietKeep"</div>
+                <nav>
+                    {Panel::ALL
+                        .into_iter()
+                        .map(|p| {
+                            view! {
+                                <button
+                                    class="nav-item"
+                                    class:active=move || panel.get() == p
+                                    on:click=move |_| panel.set(p)
+                                >
+                                    {p.label()}
+                                </button>
+                            }
+                        })
+                        .collect_view()}
+                </nav>
+                <div class="sidebar-footer">
+                    <ThemeSwitcher theme=theme />
+                    <div class="version">{move || format!("v{}", version.get())}</div>
+                </div>
+            </aside>
+            <main class="content">
+                <h1>{move || panel.get().label()}</h1>
+                <section class="card">
+                    <p class="muted">"No hosts yet. Add a host or import your existing list to get started."</p>
+                </section>
+            </main>
+        </div>
+    }
+}
+
+fn main() {
+    leptos::mount::mount_to_body(App);
+}

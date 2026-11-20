@@ -1,0 +1,103 @@
+:root {
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --border: #dde3ea;
+  --text: #1b2430;
+  --muted: #5d6b7a;
+  --accent: #2f7de1;
+  --accent-text: #ffffff;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0f141a;
+  --surface: #171e26;
+  --border: #26313d;
+  --text: #e3e9ef;
+  --muted: #8b98a5;
+  --accent: #4c9bff;
+  --accent-text: #0b1016;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
+    --bg: #0f141a;
+    --surface: #171e26;
+    --border: #26313d;
+    --text: #e3e9ef;
+    --muted: #8b98a5;
+    --accent: #4c9bff;
+    --accent-text: #0b1016;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif;
+}
+
+button { font: inherit; color: inherit; cursor: pointer; }
+
+.shell { display: flex; height: 100vh; }
+
+.sidebar {
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 16px 12px;
+  gap: 16px;
+}
+
+.brand { font-weight: 700; font-size: 18px; padding: 4px 8px; }
+
+nav { display: flex; flex-direction: column; gap: 2px; }
+
+.nav-item {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+.nav-item:hover { background: var(--bg); }
+.nav-item.active { background: var(--accent); color: var(--accent-text); }
+
+.sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+
+.theme-switcher {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.theme-switcher button {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.theme-switcher button.active { background: var(--accent); color: var(--accent-text); }
+
+.version { color: var(--muted); font-size: 12px; padding: 0 4px; }
+
+.content { flex: 1; overflow: auto; padding: 24px 32px; }
+.content h1 { margin: 0 0 16px; font-size: 22px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+
+.muted { color: var(--muted); }
