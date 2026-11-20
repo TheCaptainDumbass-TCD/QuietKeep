@@ -96,6 +96,10 @@ fn main() {
             commands::trust_host_key,
             commands::test_connection,
             commands::client_public_key,
+            commands::patch_status,
+            commands::pending_updates,
+            commands::scan_host,
+            commands::scan_all,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start QuietKeep");

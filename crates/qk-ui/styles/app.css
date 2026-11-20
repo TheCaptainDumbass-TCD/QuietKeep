@@ -174,3 +174,8 @@ nav { display: flex; flex-direction: column; gap: 2px; }
 .fingerprint { word-break: break-all; padding: 8px 10px; border-radius: 6px; background: rgba(127, 127, 127, 0.12); }
 .keybox { width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px; resize: none; word-break: break-all;
   background: rgba(127, 127, 127, 0.12); color: inherit; border: 1px solid rgba(127, 127, 127, 0.3); }
+
+.modal.wide { width: min(900px, 90vw); max-width: none; }
+.scroll { max-height: 60vh; overflow: auto; }
+.pill.bad { background: rgba(220, 38, 38, 0.15); color: #dc2626; }
+p.small { font-size: 12px; margin: 4px 0 12px; }

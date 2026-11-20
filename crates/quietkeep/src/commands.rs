@@ -6,9 +6,10 @@ use std::time::Duration;
 use qk_core::host::HostSpec;
 use qk_core::host_csv::{self, ImportReport};
 use qk_ssh::{Command, PrivateKey, SshError, Target, TrustPolicy};
-use qk_store::{Activity, Host, Store};
+use qk_core::updates::PackageUpdate;
+use qk_store::{Activity, Host, PatchStatus, Store};
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
 pub struct AppState {
@@ -184,4 +185,95 @@ pub async fn test_connection(state: State<'_, AppState>, id: i64) -> CmdResult<S
 #[tauri::command]
 pub fn client_public_key(state: State<'_, AppState>) -> CmdResult<String> {
     qk_ssh::public_key_openssh(&state.identity).map_err(err)
+}
+
+#[tauri::command]
+pub fn patch_status(state: State<'_, AppState>) -> CmdResult<Vec<PatchStatus>> {
+    store(&state).patch_status().map_err(err)
+}
+
+#[tauri::command]
+pub fn pending_updates(state: State<'_, AppState>, id: i64) -> CmdResult<Vec<PackageUpdate>> {
+    store(&state).pending_updates(id).map_err(err)
+}
+
+/// Read-only scan of one trusted host: pending updates and whether a reboot is needed.
+async fn scan_one(app: &AppHandle, h: Host) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    let Some(fp) = h.host_key.clone() else {
+        return Err("Verify this host's key first.".into());
+    };
+    let identity = state.identity.clone();
+    let result: qk_ssh::Result<qk_collect::ScanResult> = async {
+        let conn = qk_ssh::connect(&target(&h), identity, TrustPolicy::Pinned(fp), SSH_TIMEOUT).await?;
+        let scanned = qk_collect::scan(&conn, h.spec.os_type).await;
+        let _ = conn.close().await;
+        scanned
+    }
+    .await;
+    match result {
+        Ok(r) => {
+            let security = r.updates.iter().filter(|u| u.security).count();
+            let mut s = store(&state);
+            s.record_scan(h.id, &r.updates, r.reboot_required).map_err(err)?;
+            let reboot = if r.reboot_required { ", reboot required" } else { "" };
+            s.log_activity(
+                "scan.completed",
+                Some(h.id),
+                &format!("Scanned {}: {} updates ({security} security){reboot}", h.spec.name, r.updates.len()),
+            )
+            .map_err(err)?;
+            Ok(())
+        }
+        Err(e) => {
+            let msg = match e {
+                SshError::AuthFailed(user) => format!("Login as {user} was refused. Install QuietKeep's access key."),
+                other => other.to_string(),
+            };
+            let mut s = store(&state);
+            s.record_scan_error(h.id, &msg).map_err(err)?;
+            s.log_activity("scan.failed", Some(h.id), &format!("Scan of {} failed: {msg}", h.spec.name))
+                .map_err(err)?;
+            Err(msg)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn scan_host(app: AppHandle, id: i64) -> CmdResult<bool> {
+    let h = store(&app.state::<AppState>())
+        .get_host(id)
+        .map_err(err)?
+        .ok_or_else(|| "Host not found.".to_string())?;
+    scan_one(&app, h).await.map(|_| true)
+}
+
+#[derive(Serialize)]
+pub struct ScanSummary {
+    scanned: u32,
+    failed: u32,
+    skipped: u32,
+}
+
+/// Scans every host whose key the user has trusted. Hosts without a trusted key are skipped.
+#[tauri::command]
+pub async fn scan_all(app: AppHandle) -> CmdResult<ScanSummary> {
+    let hosts = store(&app.state::<AppState>()).list_hosts().map_err(err)?;
+    let (trusted, untrusted): (Vec<Host>, Vec<Host>) = hosts.into_iter().partition(|h| h.host_key.is_some());
+    let tasks: Vec<_> = trusted
+        .into_iter()
+        .map(|h| {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { scan_one(&app, h).await.is_ok() })
+        })
+        .collect();
+    let mut summary = ScanSummary { scanned: 0, failed: 0, skipped: untrusted.len() as u32 };
+    for task in tasks {
+        if task.await.unwrap_or(false) {
+            summary.scanned += 1;
+        } else {
+            summary.failed += 1;
+        }
+    }
+    Ok(summary)
 }

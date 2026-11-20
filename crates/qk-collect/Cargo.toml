@@ -7,3 +7,9 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+qk-core = { path = "../qk-core" }
+qk-ssh = { path = "../qk-ssh" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

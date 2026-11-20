@@ -4171,6 +4171,12 @@ version = "0.1.0"
 [[package]]
 name = "qk-collect"
 version = "0.1.0"
+dependencies = [
+ "qk-core",
+ "qk-ssh",
+ "serde",
+ "tokio",
+]
 
 [[package]]
 name = "qk-core"
@@ -4213,6 +4219,7 @@ dependencies = [
 name = "qk-ui"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "leptos",
  "serde",
  "serde-wasm-bindgen",
@@ -4234,6 +4241,7 @@ dependencies = [
 name = "quietkeep"
 version = "0.1.0"
 dependencies = [
+ "qk-collect",
  "qk-core",
  "qk-ssh",
  "qk-store",

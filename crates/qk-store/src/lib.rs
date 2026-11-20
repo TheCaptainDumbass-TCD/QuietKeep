@@ -3,11 +3,15 @@
 use std::path::Path;
 
 use qk_core::host::{HostSpec, OsType};
+use qk_core::updates::PackageUpdate;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use thiserror::Error;
 
-const MIGRATIONS: &[&str] = &[include_str!("migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/0001_init.sql"),
+    include_str!("migrations/0002_scans.sql"),
+];
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -31,6 +35,21 @@ pub struct Host {
     /// Pinned SHA-256 fingerprint of the host's SSH key, once the user has approved it.
     pub host_key: Option<String>,
     pub host_key_trusted: bool,
+}
+
+/// Patch state of one host from its most recent scan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PatchStatus {
+    pub host_id: i64,
+    pub name: String,
+    pub os_type: OsType,
+    pub is_patch_target: bool,
+    pub host_key_trusted: bool,
+    pub last_scan_at: Option<i64>,
+    pub pending: u32,
+    pub security: u32,
+    pub reboot_required: bool,
+    pub scan_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,6 +123,81 @@ impl Store {
         log(&tx, "host.key_trusted", Some(id), &format!("Trusted host key for {name}: {fingerprint}"))?;
         tx.commit()?;
         Ok(true)
+    }
+
+/// Replaces the host's pending updates with the results of a successful scan.
+    pub fn record_scan(&mut self, id: i64, updates: &[PackageUpdate], reboot_required: bool) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM pending_updates WHERE host_id = ?1", [id])?;
+        {
+            let mut ins = tx.prepare(
+                "INSERT OR REPLACE INTO pending_updates
+                 (host_id, name, current_version, available_version, source, security)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for u in updates {
+                ins.execute(params![id, u.name, u.current_version, u.available_version, u.source, u.security])?;
+            }
+        }
+        tx.execute(
+            "UPDATE hosts SET last_scan_at = unixepoch(), reboot_required = ?1, scan_error = NULL WHERE id = ?2",
+            params![reboot_required, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records a failed scan without discarding the last known pending updates.
+    pub fn record_scan_error(&mut self, id: i64, message: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE hosts SET last_scan_at = unixepoch(), scan_error = ?1 WHERE id = ?2",
+            params![message, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn pending_updates(&self, id: i64) -> Result<Vec<PackageUpdate>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, current_version, available_version, source, security
+             FROM pending_updates WHERE host_id = ?1 ORDER BY security DESC, name",
+        )?;
+        let rows = stmt.query_map([id], |r| {
+            Ok(PackageUpdate {
+                name: r.get(0)?,
+                current_version: r.get(1)?,
+                available_version: r.get(2)?,
+                source: r.get(3)?,
+                security: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn patch_status(&self) -> Result<Vec<PatchStatus>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT h.id, h.name, h.os_type, h.is_patch_target, h.host_key IS NOT NULL, h.last_scan_at,
+                    COUNT(u.name), COALESCE(SUM(u.security), 0), h.reboot_required, h.scan_error
+             FROM hosts h LEFT JOIN pending_updates u ON u.host_id = h.id
+             GROUP BY h.id ORDER BY h.name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let os: String = r.get(2)?;
+            Ok(PatchStatus {
+                host_id: r.get(0)?,
+                name: r.get(1)?,
+                os_type: os.parse::<OsType>().map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+                })?,
+                is_patch_target: r.get(3)?,
+                host_key_trusted: r.get(4)?,
+                last_scan_at: r.get(5)?,
+                pending: r.get(6)?,
+                security: r.get(7)?,
+                reboot_required: r.get(8)?,
+                scan_error: r.get(9)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn log_activity(&self, kind: &str, host_id: Option<i64>, message: &str) -> Result<()> {
@@ -287,5 +381,44 @@ mod tests {
         assert_eq!(h.host_key.as_deref(), Some("SHA256:abc"));
         assert!(!store.set_host_key(999, "SHA256:abc").unwrap());
         assert_eq!(store.recent_activity(1).unwrap()[0].kind, "host.key_trusted");
+    }
+
+    #[test]
+    fn records_scans() {
+        let mut store = Store::open_in_memory().unwrap();
+        let spec = HostSpec {
+            name: "db".into(),
+            address: "198.51.100.6".into(),
+            username: "admin".into(),
+            os_type: OsType::Apt,
+            is_patch_target: true,
+            has_docker: false,
+        };
+        let id = store.add_host(&spec).unwrap();
+        let up = |n: &str, sec| PackageUpdate {
+            name: n.into(),
+            current_version: Some("1".into()),
+            available_version: "2".into(),
+            source: Some("noble".into()),
+            security: sec,
+        };
+        store.record_scan(id, &[up("curl", false), up("openssl", true)], true).unwrap();
+        let s = &store.patch_status().unwrap()[0];
+        assert_eq!((s.pending, s.security, s.reboot_required), (2, 1, true));
+        assert!(s.last_scan_at.is_some() && s.scan_error.is_none());
+        assert_eq!(store.pending_updates(id).unwrap()[0].name, "openssl");
+
+        store.record_scan_error(id, "timeout").unwrap();
+        let s = &store.patch_status().unwrap()[0];
+        assert_eq!(s.pending, 2);
+        assert_eq!(s.scan_error.as_deref(), Some("timeout"));
+
+        store.record_scan(id, &[], false).unwrap();
+        let s = &store.patch_status().unwrap()[0];
+        assert_eq!((s.pending, s.reboot_required), (0, false));
+        assert!(s.scan_error.is_none());
+
+        store.delete_host(id).unwrap();
+        assert!(store.patch_status().unwrap().is_empty());
     }
 }

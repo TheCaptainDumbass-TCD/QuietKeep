@@ -111,3 +111,49 @@ pub async fn test_connection(id: i64) -> Result<String, String> {
 pub async fn client_public_key() -> Result<String, String> {
     invoke("client_public_key", JsValue::UNDEFINED).await
 }
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct PatchStatus {
+    pub host_id: i64,
+    pub name: String,
+    pub os_type: String,
+    pub is_patch_target: bool,
+    pub host_key_trusted: bool,
+    pub last_scan_at: Option<i64>,
+    pub pending: u32,
+    pub security: u32,
+    pub reboot_required: bool,
+    pub scan_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct PackageUpdate {
+    pub name: String,
+    pub current_version: Option<String>,
+    pub available_version: String,
+    pub source: Option<String>,
+    pub security: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ScanSummary {
+    pub scanned: u32,
+    pub failed: u32,
+    pub skipped: u32,
+}
+
+pub async fn patch_status() -> Result<Vec<PatchStatus>, String> {
+    invoke("patch_status", JsValue::UNDEFINED).await
+}
+
+pub async fn pending_updates(id: i64) -> Result<Vec<PackageUpdate>, String> {
+    invoke("pending_updates", args(&IdArg { id })).await
+}
+
+pub async fn scan_host(id: i64) -> Result<bool, String> {
+    invoke("scan_host", args(&IdArg { id })).await
+}
+
+pub async fn scan_all() -> Result<ScanSummary, String> {
+    invoke("scan_all", JsValue::UNDEFINED).await
+}
