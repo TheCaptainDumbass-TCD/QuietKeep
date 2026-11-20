@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod scheduler;
 
 use std::sync::Mutex;
 
@@ -22,8 +23,9 @@ fn show_main_window(app: &AppHandle) {
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Open QuietKeep", true, None::<&str>)?;
+    let scan = MenuItem::with_id(app, "scan", "Scan trusted hosts now", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &scan, &quit])?;
 
     let mut tray = TrayIconBuilder::with_id("quietkeep")
         .tooltip("QuietKeep")
@@ -31,6 +33,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
+            "scan" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = commands::scan_trusted(&app).await;
+                });
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -73,6 +81,8 @@ fn main() {
                 pending_keys: Mutex::new(Default::default()),
             });
             build_tray(app.handle())?;
+            scheduler::update_tray_tooltip(app.handle());
+            scheduler::start(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -100,6 +110,8 @@ fn main() {
             commands::pending_updates,
             commands::scan_host,
             commands::scan_all,
+            commands::get_scan_interval,
+            commands::set_scan_interval,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start QuietKeep");

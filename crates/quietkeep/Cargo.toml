@@ -19,3 +19,4 @@ qk-store = { path = "../qk-store" }
 qk-ssh = { path = "../qk-ssh" }
 serde = { version = "1", features = ["derive"] }
 qk-collect = { version = "0.1.0", path = "../qk-collect" }
+tokio = { version = "1", features = ["time"] }

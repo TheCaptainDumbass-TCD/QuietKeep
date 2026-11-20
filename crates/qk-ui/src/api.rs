@@ -157,3 +157,15 @@ pub async fn scan_host(id: i64) -> Result<bool, String> {
 pub async fn scan_all() -> Result<ScanSummary, String> {
     invoke("scan_all", JsValue::UNDEFINED).await
 }
+
+pub async fn get_scan_interval() -> Result<u32, String> {
+    invoke("get_scan_interval", JsValue::UNDEFINED).await
+}
+
+pub async fn set_scan_interval(minutes: u32) -> Result<u32, String> {
+    #[derive(Serialize)]
+    struct A {
+        minutes: u32,
+    }
+    invoke("set_scan_interval", args(&A { minutes })).await
+}

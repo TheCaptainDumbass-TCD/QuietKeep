@@ -200,6 +200,22 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
+            .optional()?)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     pub fn log_activity(&self, kind: &str, host_id: Option<i64>, message: &str) -> Result<()> {
         log(&self.conn, kind, host_id, message)
     }
@@ -420,5 +436,14 @@ mod tests {
 
         store.delete_host(id).unwrap();
         assert!(store.patch_status().unwrap().is_empty());
+    }
+
+    #[test]
+    fn settings_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_setting("scan.interval_minutes").unwrap(), None);
+        store.set_setting("scan.interval_minutes", "60").unwrap();
+        store.set_setting("scan.interval_minutes", "360").unwrap();
+        assert_eq!(store.get_setting("scan.interval_minutes").unwrap().as_deref(), Some("360"));
     }
 }

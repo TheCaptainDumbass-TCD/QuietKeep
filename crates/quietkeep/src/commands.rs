@@ -27,7 +27,7 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-fn store<'a>(state: &'a State<'_, AppState>) -> std::sync::MutexGuard<'a, Store> {
+pub fn store<'a>(state: &'a State<'_, AppState>) -> std::sync::MutexGuard<'a, Store> {
     state.store.lock().unwrap_or_else(|p| p.into_inner())
 }
 
@@ -256,8 +256,7 @@ pub struct ScanSummary {
 }
 
 /// Scans every host whose key the user has trusted. Hosts without a trusted key are skipped.
-#[tauri::command]
-pub async fn scan_all(app: AppHandle) -> CmdResult<ScanSummary> {
+pub async fn scan_trusted(app: &AppHandle) -> CmdResult<ScanSummary> {
     let hosts = store(&app.state::<AppState>()).list_hosts().map_err(err)?;
     let (trusted, untrusted): (Vec<Host>, Vec<Host>) = hosts.into_iter().partition(|h| h.host_key.is_some());
     let tasks: Vec<_> = trusted
@@ -275,5 +274,46 @@ pub async fn scan_all(app: AppHandle) -> CmdResult<ScanSummary> {
             summary.failed += 1;
         }
     }
+    crate::scheduler::update_tray_tooltip(app);
     Ok(summary)
+}
+
+#[tauri::command]
+pub async fn scan_all(app: AppHandle) -> CmdResult<ScanSummary> {
+    scan_trusted(&app).await
+}
+
+pub const SCAN_INTERVAL_KEY: &str = "scan.interval_minutes";
+pub const SCAN_INTERVALS: [u32; 5] = [0, 60, 360, 720, 1440];
+
+pub fn scan_interval(state: &State<'_, AppState>) -> u32 {
+    store(state)
+        .get_setting(SCAN_INTERVAL_KEY)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| SCAN_INTERVALS.contains(v))
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+pub fn get_scan_interval(state: State<'_, AppState>) -> u32 {
+    scan_interval(&state)
+}
+
+/// Background scans stay off until the user picks an interval here.
+#[tauri::command]
+pub fn set_scan_interval(state: State<'_, AppState>, minutes: u32) -> CmdResult<u32> {
+    if !SCAN_INTERVALS.contains(&minutes) {
+        return Err("Unsupported scan interval.".into());
+    }
+    let s = store(&state);
+    s.set_setting(SCAN_INTERVAL_KEY, &minutes.to_string()).map_err(err)?;
+    let msg = match minutes {
+        0 => "Turned off scheduled scans".to_string(),
+        60 => "Scheduled scans every hour".to_string(),
+        m => format!("Scheduled scans every {} hours", m / 60),
+    };
+    s.log_activity("settings.scan_interval", None, &msg).map_err(err)?;
+    Ok(minutes)
 }
