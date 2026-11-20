@@ -66,7 +66,12 @@ fn main() {
                 std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
             }
             let store = Store::open(&dir.join("quietkeep.db"))?;
-            app.manage(AppState { store: Mutex::new(store) });
+            let identity = qk_ssh::load_or_create_identity(&dir.join("identity_ed25519"))?;
+            app.manage(AppState {
+                store: Mutex::new(store),
+                identity: std::sync::Arc::new(identity),
+                pending_keys: Mutex::new(Default::default()),
+            });
             build_tray(app.handle())?;
             Ok(())
         })
@@ -87,6 +92,10 @@ fn main() {
             commands::pick_import_csv,
             commands::commit_import,
             commands::export_hosts_csv,
+            commands::probe_host_key,
+            commands::trust_host_key,
+            commands::test_connection,
+            commands::client_public_key,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start QuietKeep");

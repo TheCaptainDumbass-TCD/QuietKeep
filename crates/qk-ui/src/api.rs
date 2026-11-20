@@ -18,7 +18,16 @@ pub struct Host {
     pub id: i64,
     #[serde(flatten)]
     pub spec: HostSpec,
+    #[serde(default)]
+    pub host_key: Option<String>,
     pub host_key_trusted: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct HostKeyProbe {
+    pub fingerprint: String,
+    pub algorithm: String,
+    pub changed_from: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -75,4 +84,30 @@ pub async fn commit_import(hosts: Vec<HostSpec>) -> Result<usize, String> {
 
 pub async fn export_hosts_csv() -> Result<Option<usize>, String> {
     invoke("export_hosts_csv", JsValue::UNDEFINED).await
+}
+
+#[derive(Serialize)]
+struct IdArg {
+    id: i64,
+}
+
+pub async fn probe_host_key(id: i64) -> Result<HostKeyProbe, String> {
+    invoke("probe_host_key", args(&IdArg { id })).await
+}
+
+pub async fn trust_host_key(id: i64, fingerprint: String) -> Result<bool, String> {
+    #[derive(Serialize)]
+    struct A {
+        id: i64,
+        fingerprint: String,
+    }
+    invoke("trust_host_key", args(&A { id, fingerprint })).await
+}
+
+pub async fn test_connection(id: i64) -> Result<String, String> {
+    invoke("test_connection", args(&IdArg { id })).await
+}
+
+pub async fn client_public_key() -> Result<String, String> {
+    invoke("client_public_key", JsValue::UNDEFINED).await
 }

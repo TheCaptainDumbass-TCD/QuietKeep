@@ -28,6 +28,8 @@ pub struct Host {
     pub id: i64,
     #[serde(flatten)]
     pub spec: HostSpec,
+    /// Pinned SHA-256 fingerprint of the host's SSH key, once the user has approved it.
+    pub host_key: Option<String>,
     pub host_key_trusted: bool,
 }
 
@@ -76,28 +78,36 @@ impl Store {
     }
 
     pub fn list_hosts(&self) -> Result<Vec<Host>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, address, username, os_type, is_patch_target, has_docker, host_key IS NOT NULL
-             FROM hosts ORDER BY name",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            let os: String = r.get(4)?;
-            Ok(Host {
-                id: r.get(0)?,
-                spec: HostSpec {
-                    name: r.get(1)?,
-                    address: r.get(2)?,
-                    username: r.get(3)?,
-                    os_type: os.parse::<OsType>().map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
-                    })?,
-                    is_patch_target: r.get(5)?,
-                    has_docker: r.get(6)?,
-                },
-                host_key_trusted: r.get(7)?,
-            })
-        })?;
+        let mut stmt = self.conn.prepare(&format!("SELECT {HOST_COLS} FROM hosts ORDER BY name"))?;
+        let rows = stmt.query_map([], map_host)?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn get_host(&self, id: i64) -> Result<Option<Host>> {
+        Ok(self
+            .conn
+            .query_row(&format!("SELECT {HOST_COLS} FROM hosts WHERE id = ?1"), [id], map_host)
+            .optional()?)
+    }
+
+    /// Pins the host's SSH key fingerprint after the user approved it.
+    pub fn set_host_key(&mut self, id: i64, fingerprint: &str) -> Result<bool> {
+        let tx = self.conn.transaction()?;
+        let name: Option<String> = tx
+            .query_row("SELECT name FROM hosts WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        let Some(name) = name else { return Ok(false) };
+        tx.execute(
+            "UPDATE hosts SET host_key = ?1, updated_at = unixepoch() WHERE id = ?2",
+            params![fingerprint, id],
+        )?;
+        log(&tx, "host.key_trusted", Some(id), &format!("Trusted host key for {name}: {fingerprint}"))?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub fn log_activity(&self, kind: &str, host_id: Option<i64>, message: &str) -> Result<()> {
+        log(&self.conn, kind, host_id, message)
     }
 
     pub fn host_names(&self) -> Result<Vec<String>> {
@@ -146,6 +156,28 @@ impl Store {
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
+}
+
+const HOST_COLS: &str = "id, name, address, username, os_type, is_patch_target, has_docker, host_key";
+
+fn map_host(r: &rusqlite::Row<'_>) -> rusqlite::Result<Host> {
+    let os: String = r.get(4)?;
+    let host_key: Option<String> = r.get(7)?;
+    Ok(Host {
+        id: r.get(0)?,
+        spec: HostSpec {
+            name: r.get(1)?,
+            address: r.get(2)?,
+            username: r.get(3)?,
+            os_type: os.parse::<OsType>().map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
+            })?,
+            is_patch_target: r.get(5)?,
+            has_docker: r.get(6)?,
+        },
+        host_key_trusted: host_key.is_some(),
+        host_key,
+    })
 }
 
 fn insert_host(conn: &Connection, spec: &HostSpec) -> Result<i64> {
@@ -234,5 +266,26 @@ mod tests {
         Store::open(&path).unwrap().add_host(&spec("a")).unwrap();
         assert_eq!(Store::open(&path).unwrap().list_hosts().unwrap().len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pins_host_key() {
+        let mut store = Store::open_in_memory().unwrap();
+        let spec = HostSpec {
+            name: "web".into(),
+            address: "198.51.100.5".into(),
+            username: "admin".into(),
+            os_type: OsType::Apt,
+            is_patch_target: true,
+            has_docker: false,
+        };
+        let id = store.add_host(&spec).unwrap();
+        assert!(!store.get_host(id).unwrap().unwrap().host_key_trusted);
+        assert!(store.set_host_key(id, "SHA256:abc").unwrap());
+        let h = store.get_host(id).unwrap().unwrap();
+        assert!(h.host_key_trusted);
+        assert_eq!(h.host_key.as_deref(), Some("SHA256:abc"));
+        assert!(!store.set_host_key(999, "SHA256:abc").unwrap());
+        assert_eq!(store.recent_activity(1).unwrap()[0].kind, "host.key_trusted");
     }
 }

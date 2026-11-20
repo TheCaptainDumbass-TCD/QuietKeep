@@ -16,4 +16,5 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
 qk-core = { path = "../qk-core" }
 qk-store = { path = "../qk-store" }
+qk-ssh = { path = "../qk-ssh" }
 serde = { version = "1", features = ["derive"] }
