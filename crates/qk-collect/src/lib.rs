@@ -136,7 +136,10 @@ pub fn sudoers_rule(username: &str, os: OsType) -> String {
 }
 
 /// True when sudo on the host allows every command of the action without a password.
-pub async fn sudo_allowed(conn: &Connection, os: OsType, action: Action) -> Result<bool> {
+pub async fn sudo_allowed(conn: &Connection, os: OsType, action: Action, as_root: bool) -> Result<bool> {
+    if as_root {
+        return Ok(true);
+    }
     for argv in privileged_commands(os, action) {
         let check = Command::new("sudo").args(["-n", "-l"]).args(argv.iter().copied());
         if !conn.run(&check).await?.success() {
@@ -155,10 +158,15 @@ pub struct ActionReport {
 
 const TAIL_BYTES: usize = 4000;
 
-pub async fn run_action(conn: &Connection, os: OsType, action: Action) -> Result<ActionReport> {
+/// Runs the action's commands, through `sudo -n` unless the login user is already root.
+pub async fn run_action(conn: &Connection, os: OsType, action: Action, as_root: bool) -> Result<ActionReport> {
     let mut log = Vec::new();
     for argv in privileged_commands(os, action) {
-        let cmd = Command::new("sudo").args(["-n", "--"]).args(argv.iter().copied());
+        let cmd = if as_root {
+            Command::new(argv[0]).args(argv[1..].iter().copied())
+        } else {
+            Command::new("sudo").args(["-n", "--"]).args(argv.iter().copied())
+        };
         let out = conn.run(&cmd).await?;
         log.extend_from_slice(&out.stdout);
         log.extend_from_slice(&out.stderr);
@@ -203,3 +211,4 @@ mod tests {
 }
 pub mod docker;
 pub mod telemetry;
+pub mod access;

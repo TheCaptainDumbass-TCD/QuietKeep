@@ -196,3 +196,8 @@ p.small { font-size: 12px; margin: 4px 0 12px; }
 .spark polyline { stroke: #3b82f6; }
 .spark.warn polyline { stroke: #d97706; }
 .spark.bad polyline { stroke: #dc2626; }
+
+.steps { margin: 8px 0 12px 18px; padding: 0; }
+.steps li { margin: 4px 0; }
+label.check { display: flex; align-items: center; gap: 6px; margin: 10px 0; }
+.modal input.search { width: 100%; box-sizing: border-box; margin: 4px 0; }

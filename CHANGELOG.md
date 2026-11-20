@@ -4,6 +4,9 @@ QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release buil
 
 ## Unreleased
 
+- Set up access button: enter a host password once and QuietKeep installs its key and optional sudoers rule. The password is never stored
+- Hosts logged in as root run patch and reboot commands without sudo
+- Remove button renamed to Delete host
 - Host telemetry on the dashboard: load, memory, root disk and uptime with 24 hour and 7 day charts
 
 ## 0.2.0

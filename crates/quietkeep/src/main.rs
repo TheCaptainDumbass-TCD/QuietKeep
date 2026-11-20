@@ -124,6 +124,8 @@ fn main() {
             commands::kev_refresh,
             commands::kev_search,
             commands::metrics,
+            commands::setup_access_preview,
+            commands::setup_access,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start QuietKeep");

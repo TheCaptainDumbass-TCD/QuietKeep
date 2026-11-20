@@ -370,13 +370,17 @@ pub async fn check_privileged(app: AppHandle, id: i64, action: String) -> CmdRes
     let h = host(&app.state::<AppState>(), id)?;
     let os = h.spec.os_type;
     let conn = connect_trusted(&app, &h).await?;
-    let allowed = qk_collect::sudo_allowed(&conn, os, action).await.map_err(err);
+    let as_root = h.spec.username == "root";
+    let allowed = qk_collect::sudo_allowed(&conn, os, action, as_root).await.map_err(err);
     let _ = conn.close().await;
     Ok(PrivilegeCheck {
         allowed: allowed?,
         commands: qk_collect::privileged_commands(os, action)
             .into_iter()
-            .map(|argv| format!("sudo {}", qk_collect::display_command(argv)))
+            .map(|argv| {
+                let cmd = qk_collect::display_command(argv);
+                if as_root { cmd } else { format!("sudo {cmd}") }
+            })
             .collect(),
         rule: qk_collect::sudoers_rule(&h.spec.username, os),
         sudoers_path: qk_collect::SUDOERS_PATH,
@@ -390,7 +394,7 @@ pub async fn run_action(app: AppHandle, id: i64, action: String) -> CmdResult<St
     let h = host(&app.state::<AppState>(), id)?;
     let name = h.spec.name.clone();
     let conn = connect_trusted(&app, &h).await?;
-    let result = qk_collect::run_action(&conn, h.spec.os_type, action).await;
+    let result = qk_collect::run_action(&conn, h.spec.os_type, action, h.spec.username == "root").await;
     let _ = conn.close().await;
     let state = app.state::<AppState>();
     match (action, result) {
@@ -642,4 +646,80 @@ pub fn metrics(state: State<'_, AppState>, hours: u32) -> CmdResult<Vec<qk_store
         .unwrap_or(0);
     let window = (hours.min(168) as i64) * 3600;
     store(&state).metrics_since(now - window).map_err(err)
+}
+
+#[derive(Serialize)]
+pub struct AccessPreview {
+    steps: Vec<String>,
+    public_key: String,
+    rule: Option<String>,
+}
+
+#[tauri::command]
+pub fn setup_access_preview(state: State<'_, AppState>, id: i64, install_sudoers: bool) -> CmdResult<AccessPreview> {
+    let h = host(&state, id)?;
+    let as_root = h.spec.username == "root";
+    let install_sudoers = install_sudoers && !as_root;
+    Ok(AccessPreview {
+        steps: qk_collect::access::describe(install_sudoers, as_root),
+        public_key: qk_ssh::public_key_openssh(&state.identity).map_err(err)?,
+        rule: install_sudoers.then(|| qk_collect::sudoers_rule(&h.spec.username, h.spec.os_type)),
+    })
+}
+
+/// Logs in once with the user's password to install QuietKeep's key (and optionally the sudoers
+/// rule). Requires a trusted host key. The password is dropped when this returns.
+#[tauri::command]
+pub async fn setup_access(app: AppHandle, id: i64, password: String, install_sudoers: bool) -> CmdResult<String> {
+    let state = app.state::<AppState>();
+    let h = host(&state, id)?;
+    let Some(fp) = h.host_key.clone() else {
+        return Err("Verify this host's key first.".into());
+    };
+    let name = h.spec.name.clone();
+    let as_root = h.spec.username == "root";
+    let public_key = qk_ssh::public_key_openssh(&state.identity).map_err(err)?;
+    let conn = qk_ssh::connect_with_password(&target(&h), password.clone(), fp, SSH_TIMEOUT)
+        .await
+        .map_err(|e| match e {
+            SshError::AuthFailed(user) => format!("The password for {user} was refused, or password login is disabled on {name}."),
+            other => other.to_string(),
+        })?;
+    let result = async {
+        let key = qk_collect::access::install_key(&conn, &public_key).await.map_err(err)?;
+        if !key.success {
+            return Err(format!("Could not add the key: {}", key.output_tail.lines().last().unwrap_or("")));
+        }
+        if install_sudoers && !as_root {
+            let rule = qk_collect::sudoers_rule(&h.spec.username, h.spec.os_type);
+            let r = qk_collect::access::install_sudoers(&conn, &rule, &password, as_root).await.map_err(err)?;
+            if !r.success {
+                return Err(format!(
+                    "The key was added, but the sudoers rule was not installed: {}",
+                    r.output_tail.lines().last().unwrap_or("sudo refused")
+                ));
+            }
+        }
+        Ok(())
+    }
+    .await;
+    drop(password);
+    let _ = conn.close().await;
+    let sudo_note = if install_sudoers && !as_root { " and sudoers rule" } else { "" };
+    match result {
+        Ok(()) => {
+            store(&app.state::<AppState>())
+                .log_activity("host.access_setup", Some(id), &format!("Installed access key{sudo_note} on {name}"))
+                .map_err(err)?;
+            let check = connect_trusted(&app, &h).await?;
+            let _ = check.close().await;
+            Ok(format!("{name} is ready. QuietKeep can now log in with its own key."))
+        }
+        Err(e) => {
+            store(&app.state::<AppState>())
+                .log_activity("host.access_failed", Some(id), &format!("Access setup on {name} failed: {e}"))
+                .map_err(err)?;
+            Err(e)
+        }
+    }
 }

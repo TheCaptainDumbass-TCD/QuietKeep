@@ -11,6 +11,48 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
     let probe = RwSignal::new(None::<(Host, HostKeyProbe)>);
     let access_key = RwSignal::new(None::<String>);
     let busy = RwSignal::new(None::<i64>);
+    let setup = RwSignal::new(None::<(Host, api::AccessPreview)>);
+    let setup_password = RwSignal::new(String::new());
+    let setup_sudoers = RwSignal::new(true);
+    let setup_busy = RwSignal::new(false);
+    let setup_error = RwSignal::new(None::<String>);
+    let load_setup = move |h: Host| {
+        let sudoers = setup_sudoers.get_untracked();
+        spawn_local(async move {
+            match api::setup_access_preview(h.id, sudoers).await {
+                Ok(p) => setup.set(Some((h, p))),
+                Err(e) => notice.set(Some(format!("{}: {e}", h.spec.name))),
+            }
+        })
+    };
+    let open_setup = move |h: Host| {
+        setup_password.set(String::new());
+        setup_error.set(None);
+        load_setup(h);
+    };
+    let run_setup = move |_| {
+        let Some((h, _)) = setup.get_untracked() else { return };
+        let password = setup_password.get_untracked();
+        if password.is_empty() {
+            setup_error.set(Some("Enter the password for this host.".into()));
+            return;
+        }
+        setup_busy.set(true);
+        setup_error.set(None);
+        spawn_local(async move {
+            let result = api::setup_access(h.id, password, setup_sudoers.get_untracked()).await;
+            setup_password.set(String::new());
+            setup_busy.set(false);
+            match result {
+                Ok(msg) => {
+                    setup.set(None);
+                    notice.set(Some(msg));
+                }
+                Err(e) => setup_error.set(Some(e)),
+            }
+            refresh.run(());
+        })
+    };
 
     let verify = move |h: Host| {
         busy.set(Some(h.id));
@@ -26,8 +68,13 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
         let Some((h, p)) = probe.get_untracked() else { return };
         probe.set(None);
         spawn_local(async move {
-            match api::trust_host_key(h.id, p.fingerprint).await {
-                Ok(_) => notice.set(Some(format!("Trusted the host key for {}.", h.spec.name))),
+            match api::trust_host_key(h.id, p.fingerprint.clone()).await {
+                Ok(_) => {
+                    notice.set(Some(format!("Trusted the host key for {}.", h.spec.name)));
+                    let mut trusted = h.clone();
+                    trusted.host_key = Some(p.fingerprint.clone());
+                    open_setup(trusted);
+                }
                 Err(e) => notice.set(Some(format!("{}: {e}", h.spec.name))),
             }
             refresh.run(());
@@ -149,7 +196,9 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                                         {if trusted {
                                             view! {
                                                 <button class="btn small" disabled=move || busy.get() == Some(id)
-                                                    on:click=move |_| test(h_ssh.clone())>"Test"</button>
+                                                    on:click={let h = h_ssh.clone(); move |_| test(h.clone())}>"Test"</button>
+                                                <button class="btn small primary" disabled=move || busy.get() == Some(id)
+                                                    on:click={let h = h_ssh.clone(); move |_| open_setup(h.clone())}>"Set up access"</button>
                                             }.into_any()
                                         } else {
                                             view! {
@@ -158,7 +207,7 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                                             }.into_any()
                                         }}
                                         <button class="btn small" on:click=move |_| pending_delete.set(Some(h.clone()))>
-                                            "Remove"
+                                            "Delete host"
                                         </button>
                                     </td>
                                 </tr>
@@ -244,6 +293,39 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                         <button class="btn" on:click=move |_| pending_delete.set(None)>"Cancel"</button>
                         <button class="btn danger" on:click=confirm_delete>"Remove"</button>
                     </div>
+                </div>
+            </div>
+        </Show>
+        <Show when=move || setup.with(|s| s.is_some())>
+            <div class="modal-backdrop">
+                <div class="modal wide">
+                    {move || setup.get().map(|(h, p)| {
+                        let is_root = h.spec.username == "root";
+                        view! {
+                            <h2>{format!("Set up access on {}", h.spec.name)}</h2>
+                            <p>{format!("Enter the SSH password for {}@{}. QuietKeep will:", h.spec.username, h.spec.address)}</p>
+                            <ol class="steps">{p.steps.iter().map(|s| view! { <li>{s.clone()}</li> }).collect_view()}</ol>
+                            <input class="search" type="password" placeholder="Password" autocomplete="off"
+                                prop:value=move || setup_password.get()
+                                on:input=move |ev| setup_password.set(event_target_value(&ev)) />
+                            <Show when=move || !is_root>
+                                <label class="check">
+                                    <input type="checkbox" prop:checked=move || setup_sudoers.get()
+                                        on:change={let h = h.clone(); move |ev| { setup_sudoers.set(event_target_checked(&ev)); load_setup(h.clone()); }} />
+                                    " Also allow patching and rebooting (installs the sudoers rule)"
+                                </label>
+                            </Show>
+                            {p.rule.clone().map(|r| view! { <textarea class="keybox mono" readonly rows="6">{r}</textarea> })}
+                            <p class="muted small">{format!("Key to install: {}", p.public_key)}</p>
+                            {move || setup_error.get().map(|e| view! { <p class="pill bad">{e}</p> })}
+                            <div class="modal-actions">
+                                <button class="btn" on:click=move |_| { setup_password.set(String::new()); setup.set(None); }>"Cancel"</button>
+                                <button class="btn primary" disabled=move || setup_busy.get() on:click=run_setup>
+                                    {move || if setup_busy.get() { "Setting up..." } else { "Set up access" }}
+                                </button>
+                            </div>
+                        }
+                    })}
                 </div>
             </div>
         </Show>

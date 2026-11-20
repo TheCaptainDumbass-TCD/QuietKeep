@@ -329,3 +329,31 @@ pub async fn metrics(hours: u32) -> Result<Vec<HostMetrics>, String> {
     }
     invoke("metrics", args(&A { hours })).await
 }
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct AccessPreview {
+    pub steps: Vec<String>,
+    pub public_key: String,
+    pub rule: Option<String>,
+}
+
+pub async fn setup_access_preview(id: i64, install_sudoers: bool) -> Result<AccessPreview, String> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct A {
+        id: i64,
+        install_sudoers: bool,
+    }
+    invoke("setup_access_preview", args(&A { id, install_sudoers })).await
+}
+
+pub async fn setup_access(id: i64, password: String, install_sudoers: bool) -> Result<String, String> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct A {
+        id: i64,
+        password: String,
+        install_sudoers: bool,
+    }
+    invoke("setup_access", args(&A { id, password, install_sudoers })).await
+}

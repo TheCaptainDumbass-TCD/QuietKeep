@@ -106,12 +106,32 @@ impl Output {
     }
 }
 
+enum Auth {
+    Key(Arc<PrivateKey>),
+    Password(String),
+}
+
 pub async fn connect(
     target: &Target,
     identity: Arc<PrivateKey>,
     policy: TrustPolicy,
     timeout: Duration,
 ) -> Result<Connection> {
+    connect_inner(target, Auth::Key(identity), policy, timeout).await
+}
+
+/// One-time password login used only to install QuietKeep's key. The host key must already be
+/// pinned, so a password is never sent to an unverified machine. The password is not stored.
+pub async fn connect_with_password(
+    target: &Target,
+    password: String,
+    pinned_fingerprint: String,
+    timeout: Duration,
+) -> Result<Connection> {
+    connect_inner(target, Auth::Password(password), TrustPolicy::Pinned(pinned_fingerprint), timeout).await
+}
+
+async fn connect_inner(target: &Target, auth: Auth, policy: TrustPolicy, timeout: Duration) -> Result<Connection> {
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(Duration::from_secs(300)),
         ..Default::default()
@@ -143,12 +163,19 @@ pub async fn connect(
         _ => return Err(SshError::CertificateUnsupported),
     };
 
-    let hash = handle.best_supported_rsa_hash().await?.flatten();
-    let auth = tokio::time::timeout(
-        timeout,
-        handle.authenticate_publickey(&target.username, PrivateKeyWithHashAlg::new(identity, hash)),
-    )
-    .await
+    let auth = match auth {
+        Auth::Key(identity) => {
+            let hash = handle.best_supported_rsa_hash().await?.flatten();
+            tokio::time::timeout(
+                timeout,
+                handle.authenticate_publickey(&target.username, PrivateKeyWithHashAlg::new(identity, hash)),
+            )
+            .await
+        }
+        Auth::Password(password) => {
+            tokio::time::timeout(timeout, handle.authenticate_password(&target.username, password)).await
+        }
+    }
     .map_err(|_| SshError::Timeout)??;
     if !auth.success() {
         return Err(SshError::AuthFailed(target.username.clone()));
@@ -158,8 +185,17 @@ pub async fn connect(
 
 impl Connection {
     pub async fn run(&self, command: &Command) -> Result<Output> {
+        self.run_with_stdin(command, None).await
+    }
+
+    /// Runs a command and writes `stdin` to it, for example a sudo password for `sudo -S`.
+    pub async fn run_with_stdin(&self, command: &Command, stdin: Option<&[u8]>) -> Result<Output> {
         let mut channel = self.handle.channel_open_session().await?;
         channel.exec(true, command.as_str()).await?;
+        if let Some(input) = stdin {
+            channel.data(input).await?;
+            channel.eof().await?;
+        }
         let mut out = Output { exit_status: None, stdout: Vec::new(), stderr: Vec::new() };
         while let Some(msg) = channel.wait().await {
             match msg {
