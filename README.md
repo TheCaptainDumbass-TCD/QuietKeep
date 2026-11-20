@@ -28,7 +28,7 @@ Early development. The first release is agentless and uses SSH. An optional agen
 ## Install
 
 ```sh
-sudo apt install ./quietkeep_0.2.0_amd64.deb
+sudo apt install ./quietkeep_0.3.1_amd64.deb
 ```
 
 Tested on clean Debian 13 and Ubuntu 24.04 systems. Removing the package with `sudo apt remove quietkeep` leaves your data in place.
@@ -69,3 +69,9 @@ The package is written to `target/release/bundle/deb/`.
 | `qk-auth` | Local unlock and secret storage (planned) |
 | `quietkeep` | Tauri 2 desktop shell, tray and scheduler |
 | `qk-ui` | Rust/WebAssembly user interface (Leptos) |
+
+## License
+
+Copyright (C) 2026 Dennis Ayotte
+
+QuietKeep is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License or (at your option) any later version. See [LICENSE](LICENSE).

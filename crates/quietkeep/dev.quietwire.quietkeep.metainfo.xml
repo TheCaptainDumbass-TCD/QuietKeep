@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.quietwire.quietkeep</id>
+  <name>QuietKeep</name>
+  <summary>Homelab patch and telemetry manager</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="dev.quietwire">
+    <name>Dennis Ayotte</name>
+  </developer>
+  <developer_name>Dennis Ayotte</developer_name>
+  <update_contact>dennis@thecaptaindumbass.com</update_contact>
+  <description>
+    <p>QuietKeep keeps a small to medium homelab patched and monitored from your desktop. It runs locally with no external server and opens no network port.</p>
+    <ul>
+      <li>Agentless SSH with pinned host keys and an app-owned key</li>
+      <li>Patch scans for apt, Kali, Proxmox and pacman hosts</li>
+      <li>Confirmed patching and rebooting through an exact-command sudoers rule</li>
+      <li>Docker image update checks and confirmed compose updates</li>
+      <li>CISA Known Exploited Vulnerabilities catalog, downloaded only with permission</li>
+      <li>Host telemetry charts</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">quietkeep.desktop</launchable>
+  <url type="homepage">https://github.com/TheCaptainDumbass-TCD/QuietKeep</url>
+  <categories>
+    <category>System</category>
+    <category>Monitor</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.3.1" date="2026-11-20"/>
+    <release version="0.3.0" date="2026-11-20"/>
+    <release version="0.2.0" date="2026-11-19"/>
+  </releases>
+</component>

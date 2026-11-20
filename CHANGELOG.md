@@ -2,6 +2,11 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.3.1
+
+- Licensed under GPL-3.0-or-later
+- Package shows the author, license and app name in software centers (AppStream metadata and Debian copyright file)
+
 ## 0.3.0
 
 - Set up access button: enter a host password once and QuietKeep installs its key and optional sudoers rule. The password is never stored

@@ -50,8 +50,17 @@
       "deb": {
         "section": "admin",
         "priority": "optional",
-        "desktopTemplate": "quietkeep.desktop"
+        "desktopTemplate": "quietkeep.desktop",
+        "files": {
+          "/usr/share/metainfo/dev.quietwire.quietkeep.metainfo.xml": "dev.quietwire.quietkeep.metainfo.xml",
+          "/usr/share/doc/quietkeep/copyright": "debian/copyright"
+        }
       }
-    }
+    },
+    "publisher": "Dennis Ayotte",
+    "copyright": "Copyright (C) 2026 Dennis Ayotte",
+    "license": "GPL-3.0-or-later",
+    "licenseFile": "../../LICENSE",
+    "homepage": "https://github.com/TheCaptainDumbass-TCD/QuietKeep"
   }
 }
