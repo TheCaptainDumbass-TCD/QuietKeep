@@ -2,6 +2,16 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.7.0
+
+- Docker release tracking: with your permission QuietKeep reads tag lists and digests from the registries your images come from (Docker Hub, ghcr.io, quay.io, codeberg.org and others). It never logs in or pulls. A new release of the same kind of tag shows as "v0.13.4 available"
+- Update to a new release: QuietKeep backs up the compose file, changes the one image line and then pulls and recreates the project
+- Major releases are flagged. Database images (PostgreSQL, MySQL, MariaDB, MongoDB) never get a one click major upgrade because their data needs a migration
+- Pinned images show whether the pin is still the newest build of its tag or has fallen behind
+- Containers not started with docker compose show Update by hand instead of a button
+- Results are cached for three hours and Docker Hub rate limits are explained, so scheduled scans stay within Docker Hub's hourly limit
+- Rust 1.82 or newer is required to build
+
 ## 0.6.1
 
 - Docker: each host is its own bordered card with a colored header, and columns line up across hosts

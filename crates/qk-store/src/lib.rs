@@ -16,6 +16,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0005_access.sql"),
     include_str!("migrations/0006_held.sql"),
     include_str!("migrations/0007_update_note.sql"),
+    include_str!("migrations/0008_releases.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -72,6 +73,9 @@ pub struct ContainerRow {
     pub config_file: Option<String>,
     pub update_available: Option<bool>,
     pub update_note: Option<String>,
+    pub update_kind: Option<String>,
+    pub latest_tag: Option<String>,
+    pub major_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -288,13 +292,14 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
         {
             let mut ins = tx.prepare(
                 "INSERT OR REPLACE INTO containers
-                 (host_id, name, image, state, status, project, service, config_file, update_available, update_note)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 (host_id, name, image, state, status, project, service, config_file, update_available, update_note,
+                  update_kind, latest_tag, major_tag)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             )?;
             for c in containers {
                 ins.execute(params![
                     id, c.name, c.image, c.state, c.status, c.project, c.service, c.config_file, c.update_available,
-                    c.update_note
+                    c.update_note, c.update_kind, c.latest_tag, c.major_tag
                 ])?;
             }
         }
@@ -333,7 +338,7 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
             })?
             .collect::<std::result::Result<_, _>>()?;
         let mut c_stmt = self.conn.prepare(
-            "SELECT name, image, state, status, project, service, config_file, update_available, update_note
+            "SELECT name, image, state, status, project, service, config_file, update_available, update_note, update_kind, latest_tag, major_tag
              FROM containers WHERE host_id = ?1 ORDER BY project IS NULL, project, name",
         )?;
         for h in &mut hosts {
@@ -349,6 +354,9 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
                         config_file: r.get(6)?,
                         update_available: r.get(7)?,
                         update_note: r.get(8)?,
+                        update_kind: r.get(9)?,
+                        latest_tag: r.get(10)?,
+                        major_tag: r.get(11)?,
                     })
                 })?
                 .collect::<std::result::Result<_, _>>()?;
@@ -664,6 +672,9 @@ mod tests {
             config_file: Some("/srv/web/compose.yaml".into()),
             update_available: Some(true),
             update_note: None,
+            update_kind: Some("release".into()),
+            latest_tag: Some("1.27.0".into()),
+            major_tag: None,
         };
         store.record_docker(id, &[c.clone()]).unwrap();
         let d = &store.docker_status().unwrap()[0];

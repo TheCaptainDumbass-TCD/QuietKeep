@@ -210,6 +210,12 @@ pub struct ContainerRow {
     pub update_available: Option<bool>,
     #[serde(default)]
     pub update_note: Option<String>,
+    #[serde(default)]
+    pub update_kind: Option<String>,
+    #[serde(default)]
+    pub latest_tag: Option<String>,
+    #[serde(default)]
+    pub major_tag: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -374,4 +380,40 @@ pub async fn update_pending() -> Result<bool, String> {
 
 pub async fn restart_app() -> Result<(), String> {
     invoke("restart_app", JsValue::UNDEFINED).await
+}
+
+pub async fn registry_state() -> Result<Option<bool>, String> {
+    invoke("registry_state", JsValue::UNDEFINED).await
+}
+
+pub async fn registry_set_allowed(allowed: bool) -> Result<bool, String> {
+    #[derive(Serialize)]
+    struct A {
+        allowed: bool,
+    }
+    invoke("registry_set_allowed", args(&A { allowed })).await
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct TagUpdatePreview {
+    pub file: String,
+    pub old_image: String,
+    pub new_image: String,
+    pub major: bool,
+    pub commands: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct TagArg {
+    id: i64,
+    container: String,
+    major: bool,
+}
+
+pub async fn docker_tag_preview(id: i64, container: String, major: bool) -> Result<TagUpdatePreview, String> {
+    invoke("docker_tag_preview", args(&TagArg { id, container, major })).await
+}
+
+pub async fn docker_update_tag(id: i64, container: String, major: bool) -> Result<String, String> {
+    invoke("docker_update_tag", args(&TagArg { id, container, major })).await
 }

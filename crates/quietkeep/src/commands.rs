@@ -444,12 +444,63 @@ pub fn docker_status(state: State<'_, AppState>) -> CmdResult<Vec<qk_store::Dock
     store(&state).docker_status().map_err(err)
 }
 
+const REGISTRY_ALLOWED_KEY: &str = "registry.allowed";
+
+fn registry_choice(state: &State<'_, AppState>) -> Option<bool> {
+    match store(state).get_setting(REGISTRY_ALLOWED_KEY).ok().flatten().as_deref() {
+        Some("1") => Some(true),
+        Some("0") => Some(false),
+        _ => None,
+    }
+}
+
+/// Whether the user allowed QuietKeep to contact container registries: `None` until they choose.
+#[tauri::command]
+pub fn registry_state(state: State<'_, AppState>) -> Option<bool> {
+    registry_choice(&state)
+}
+
+#[tauri::command]
+pub fn registry_set_allowed(state: State<'_, AppState>, allowed: bool) -> CmdResult<bool> {
+    let s = store(&state);
+    s.set_setting(REGISTRY_ALLOWED_KEY, if allowed { "1" } else { "0" }).map_err(err)?;
+    let msg = if allowed { "Allowed registry checks for Docker images" } else { "Turned off registry checks for Docker images" };
+    s.log_activity("settings.registry", None, msg).map_err(err)?;
+    Ok(allowed)
+}
+
+async fn assess_all(containers: &[qk_collect::docker::Container]) -> Vec<Option<qk_intel::registry::Assessment>> {
+    let inputs: Vec<(String, Vec<String>)> = containers
+        .iter()
+        .map(|c| (c.configured_image.clone().unwrap_or_else(|| c.image.clone()), c.local_digests.clone()))
+        .collect();
+    let n = inputs.len();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut client = qk_intel::registry::Client::new();
+        let mut cache = std::collections::HashMap::new();
+        inputs
+            .into_iter()
+            .map(|key| {
+                Some(
+                    cache
+                        .entry(key.clone())
+                        .or_insert_with(|| qk_intel::registry::assess_cached(&mut client, &key.0, &key.1))
+                        .clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_else(|_| vec![None; n])
+}
+
 async fn docker_one(app: &AppHandle, h: Host) -> CmdResult<()> {
+    let registry = registry_choice(&app.state::<AppState>()) == Some(true);
     let result = async {
         let conn = connect_trusted(app, &h).await?;
         let r = async {
             let mut containers = qk_collect::docker::inventory(&conn).await?;
-            qk_collect::docker::check_updates(&conn, &mut containers).await?;
+            qk_collect::docker::check_updates(&conn, &mut containers, !registry).await?;
             Ok::<_, qk_ssh::SshError>(containers)
         }
         .await
@@ -458,22 +509,43 @@ async fn docker_one(app: &AppHandle, h: Host) -> CmdResult<()> {
         r
     }
     .await;
+    let result = match result {
+        Ok(c) => {
+            let a = if registry { assess_all(&c).await } else { vec![None; c.len()] };
+            Ok((c, a))
+        }
+        Err(e) => Err(e),
+    };
     let state = app.state::<AppState>();
     let mut s = store(&state);
     match result {
-        Ok(containers) => {
+        Ok((containers, assessments)) => {
             let rows: Vec<qk_store::ContainerRow> = containers
                 .into_iter()
-                .map(|c| qk_store::ContainerRow {
-                    name: c.name,
-                    image: c.image,
-                    state: c.state,
-                    status: c.status,
-                    project: c.project,
-                    service: c.service,
-                    config_file: c.config_file,
-                    update_available: c.update_available,
-                    update_note: c.update_note,
+                .zip(assessments)
+                .map(|(c, a)| {
+                    let mut row = qk_store::ContainerRow {
+                        name: c.name,
+                        image: c.image,
+                        state: c.state,
+                        status: c.status,
+                        project: c.project,
+                        service: c.service,
+                        config_file: c.config_file,
+                        update_available: c.update_available,
+                        update_note: c.update_note,
+                        update_kind: None,
+                        latest_tag: None,
+                        major_tag: None,
+                    };
+                    if let Some(a) = a {
+                        row.update_available = a.update_available;
+                        row.update_note = a.note;
+                        row.update_kind = Some(a.kind.to_string());
+                        row.latest_tag = a.latest_tag;
+                        row.major_tag = a.major_tag;
+                    }
+                    row
                 })
                 .collect();
             let updates = rows.iter().filter(|c| c.update_available == Some(true)).count();
@@ -771,4 +843,92 @@ pub fn update_pending() -> bool {
 #[tauri::command]
 pub fn restart_app(app: AppHandle) {
     app.restart();
+}
+
+#[derive(Serialize)]
+pub struct TagUpdatePreview {
+    file: String,
+    old_image: String,
+    new_image: String,
+    major: bool,
+    commands: Vec<String>,
+}
+
+fn replace_tag(image: &str, tag: &str) -> String {
+    let base = image.split('@').next().unwrap_or(image);
+    let slash = base.rfind('/');
+    let name = match base.rfind(':') {
+        Some(c) if slash.is_none_or(|s| c > s) => &base[..c],
+        _ => base,
+    };
+    format!("{name}:{tag}")
+}
+
+/// Compose file, current image and new image for moving a container to a newer release.
+fn tag_update_target(state: &State<'_, AppState>, id: i64, container: &str, major: bool) -> CmdResult<(String, String, String)> {
+    let row = store(state)
+        .docker_status()
+        .map_err(err)?
+        .into_iter()
+        .find(|h| h.host_id == id)
+        .and_then(|h| h.containers.into_iter().find(|c| c.name == container))
+        .ok_or_else(|| "This container is not in the last scan. Scan the host again.".to_string())?;
+    let file = row.config_file.ok_or_else(|| {
+        "This container was not started with docker compose, so QuietKeep cannot change its image. Pull the new image and recreate the container by hand.".to_string()
+    })?;
+    let tag = if major { row.major_tag } else { row.latest_tag }
+        .ok_or_else(|| "No newer release is known. Scan the host again.".to_string())?;
+    let repo = qk_intel::registry::parse_ref(&row.image).map(|r| r.repository).unwrap_or_default();
+    if major && qk_intel::registry::is_database(&repo) {
+        return Err("Database major upgrades need a data migration, so QuietKeep does not do them. Follow the image's upgrade guide.".into());
+    }
+    let new_image = replace_tag(&row.image, &tag);
+    Ok((file, row.image, new_image))
+}
+
+#[tauri::command]
+pub fn docker_tag_preview(state: State<'_, AppState>, id: i64, container: String, major: bool) -> CmdResult<TagUpdatePreview> {
+    let (file, old_image, new_image) = tag_update_target(&state, id, &container, major)?;
+    let mut commands = vec![
+        format!("cp -p {file} {file}.quietkeep-<date>.bak"),
+        format!("In {file}: image: {old_image}  becomes  image: {new_image}"),
+    ];
+    commands.extend(qk_collect::docker::compose_update_commands(&file).iter().map(|c| c.as_str().to_string()));
+    Ok(TagUpdatePreview { file, old_image, new_image, major, commands })
+}
+
+#[tauri::command]
+pub async fn docker_update_tag(app: AppHandle, id: i64, container: String, major: bool) -> CmdResult<String> {
+    let (file, old, new) = tag_update_target(&app.state::<AppState>(), id, &container, major)?;
+    let h = host(&app.state::<AppState>(), id)?;
+    let name = h.spec.name.clone();
+    let conn = connect_trusted(&app, &h).await?;
+    let result = async {
+        let edit = conn.run(&qk_collect::docker::set_image_command(&file, &old, &new)).await.map_err(err)?;
+        if !edit.success() {
+            return Err(match edit.exit_status {
+                Some(4) => format!("The line image: {old} was not found in {file}. The image may be set through a variable, so change it by hand."),
+                Some(3) => format!("QuietKeep cannot write {file}. Check its owner and permissions."),
+                _ => format!("Changing {file} failed: {}", String::from_utf8_lossy(&edit.stdout).trim()),
+            });
+        }
+        let backup = String::from_utf8_lossy(&edit.stdout).trim().to_string();
+        let r = qk_collect::docker::update_compose(&conn, &file).await.map_err(err)?;
+        if !r.success {
+            return Err(format!(
+                "{file} now uses {new} (backup {backup}), but the update failed: {}",
+                r.output_tail.lines().last().unwrap_or("")
+            ));
+        }
+        Ok(format!("Updated {container} on {name} to {new}. The old compose file is saved as {backup}."))
+    }
+    .await;
+    let _ = conn.close().await;
+    let (kind, msg) = match &result {
+        Ok(m) => ("docker.update", m.clone()),
+        Err(m) => ("docker.update_failed", m.clone()),
+    };
+    store(&app.state::<AppState>()).log_activity(kind, Some(id), &msg).map_err(err)?;
+    let _ = docker_one(&app, h).await;
+    result
 }

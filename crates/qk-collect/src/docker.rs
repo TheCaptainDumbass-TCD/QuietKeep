@@ -22,6 +22,12 @@ pub struct Container {
     /// Plain-language reason when `update_available` is `None`.
     #[serde(default)]
     pub update_note: Option<String>,
+    /// Registry digests of the local image (`repo@sha256:...`).
+    #[serde(default)]
+    pub local_digests: Vec<String>,
+    /// Image reference the container was created from, including any `@sha256:` pin.
+    #[serde(default)]
+    pub configured_image: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +65,8 @@ pub fn parse_ps(output: &str) -> Vec<Container> {
             config_file: label(&p.labels, "com.docker.compose.project.config_files"),
             update_available: None,
             update_note: None,
+            local_digests: Vec::new(),
+            configured_image: None,
         })
         .collect()
 }
@@ -100,38 +108,66 @@ async fn configured_image(conn: &Connection, container: &str) -> Result<Option<S
     Ok(out.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
 }
 
-/// Fills `update_available` for each container by comparing local and registry digests, and
-/// `update_note` with the reason when that is not possible.
-pub async fn check_updates(conn: &Connection, containers: &mut [Container]) -> Result<()> {
-    let buildx = conn.run(&Command::new("docker").args(["buildx", "version"])).await?.success();
-    let mut results: HashMap<String, (Option<bool>, Option<&'static str>)> = HashMap::new();
+/// Records each container's configured image and local digests. With `host_registry` set it
+/// also asks the host's `docker buildx` for the registry digest, the fallback used when the
+/// user has not allowed QuietKeep to contact registries itself.
+pub async fn check_updates(conn: &Connection, containers: &mut [Container], host_registry: bool) -> Result<()> {
+    let buildx = host_registry && conn.run(&Command::new("docker").args(["buildx", "version"])).await?.success();
+    let mut locals: HashMap<String, Vec<String>> = HashMap::new();
+    let mut remotes: HashMap<String, Option<String>> = HashMap::new();
     for c in containers.iter_mut() {
-        let pinned = c.image.contains('@')
-            || configured_image(conn, &c.name).await?.is_some_and(|i| i.contains("@sha256:"));
+        c.configured_image = configured_image(conn, &c.name).await?;
+        if !locals.contains_key(&c.image) {
+            let l = local_digests(conn, &c.image).await?.unwrap_or_default();
+            locals.insert(c.image.clone(), l);
+        }
+        c.local_digests = locals[&c.image].clone();
+        let pinned = c.image.contains('@') || c.configured_image.as_deref().is_some_and(|i| i.contains("@sha256:"));
         if pinned {
             c.update_available = None;
             c.update_note = Some(NOTE_PINNED.into());
             continue;
         }
-        if !results.contains_key(&c.image) {
-            let verdict = if !buildx {
-                (None, Some(NOTE_NO_BUILDX))
-            } else {
-                match (local_digests(conn, &c.image).await?, remote_digest(conn, &c.image).await?) {
-                    (Some(local), Some(remote)) if !local.is_empty() => {
-                        (Some(!local.iter().any(|d| d.ends_with(&remote))), None)
-                    }
-                    (None, _) | (Some(_), Some(_)) => (None, Some(NOTE_NO_LOCAL)),
-                    (Some(_), None) => (None, Some(NOTE_REGISTRY)),
-                }
-            };
-            results.insert(c.image.clone(), verdict);
+        if !host_registry {
+            continue;
         }
-        let (available, note) = results[&c.image];
-        c.update_available = available;
-        c.update_note = note.map(String::from);
+        if !buildx {
+            c.update_note = Some(NOTE_NO_BUILDX.into());
+            continue;
+        }
+        if !remotes.contains_key(&c.image) {
+            let r = remote_digest(conn, &c.image).await?;
+            remotes.insert(c.image.clone(), r);
+        }
+        match (c.local_digests.is_empty(), &remotes[&c.image]) {
+            (false, Some(remote)) => c.update_available = Some(!c.local_digests.iter().any(|d| d.ends_with(remote))),
+            (true, _) => c.update_note = Some(NOTE_NO_LOCAL.into()),
+            (false, None) => c.update_note = Some(NOTE_REGISTRY.into()),
+        }
     }
     Ok(())
+}
+
+pub(crate) const SET_IMAGE: &str = r#"f=$1; old=$2; new=$3
+[ -w "$f" ] || { echo "cannot write $f"; exit 3; }
+tmp="$f.quietkeep-tmp"
+awk -v old="$old" -v new="$new" 'BEGIN { sq = sprintf("%c", 39) }
+{ line = $0
+  if (match(line, /^[ \t]*image:[ \t]*/)) {
+    pre = substr(line, 1, RLENGTH); val = substr(line, RLENGTH + 1); sub(/[ \t]+$/, "", val); q = ""
+    a = substr(val, 1, 1); z = substr(val, length(val), 1)
+    if (length(val) > 1 && a == z && (a == "\"" || a == sq)) { q = a; val = substr(val, 2, length(val) - 2) }
+    if (val == old) { line = pre q new q; c++ }
+  }
+  print line }
+END { exit c ? 0 : 4 }' "$f" > "$tmp" || { rc=$?; rm -f "$tmp"; exit $rc; }
+bak="$f.quietkeep-$(date +%Y%m%d-%H%M%S).bak"
+cp -p "$f" "$bak" && cat "$tmp" > "$f" && rm -f "$tmp" && echo "$bak""#;
+
+/// Backs up a compose file, then changes every `image: <old>` line to `image: <new>`. Prints the
+/// backup path. Exits 3 when the file is not writable and 4 when no line matches exactly.
+pub fn set_image_command(file: &str, old: &str, new: &str) -> Command {
+    Command::new("sh").args(["-c", SET_IMAGE, "sh", file, old, new])
 }
 
 pub fn compose_update_commands(config_file: &str) -> Vec<Command> {
@@ -178,5 +214,31 @@ not json"#;
         let cmds = compose_update_commands("/srv/my app/compose.yaml");
         assert_eq!(cmds[0].as_str(), "docker compose -f '/srv/my app/compose.yaml' pull");
         assert_eq!(cmds[1].as_str(), "docker compose -f '/srv/my app/compose.yaml' up -d");
+    }
+}
+
+#[cfg(test)]
+mod set_image_tests {
+    use super::SET_IMAGE;
+
+    fn run(file: &std::path::Path, old: &str, new: &str) -> std::process::Output {
+        std::process::Command::new("sh").args(["-c", SET_IMAGE, "sh"]).arg(file).args([old, new]).output().unwrap()
+    }
+
+    #[test]
+    fn replaces_exact_image_lines_with_backup() {
+        let dir = std::env::temp_dir().join(format!("qk-set-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("compose.yaml");
+        std::fs::write(&f, "services:\n  web:\n    image: \"nginx:1.26.0\"\n  other:\n    image: nginx:1.26.0-alpine\n").unwrap();
+        let out = run(&f, "nginx:1.26.0", "nginx:1.26.3");
+        assert!(out.status.success());
+        let backup = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert!(std::path::Path::new(&backup).exists());
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("    image: \"nginx:1.26.3\"\n"));
+        assert!(text.contains("image: nginx:1.26.0-alpine"));
+        assert_eq!(run(&f, "nginx:9.9", "nginx:10").status.code(), Some(4));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
