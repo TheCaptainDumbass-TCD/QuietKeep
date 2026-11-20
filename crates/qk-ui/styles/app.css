@@ -216,3 +216,6 @@ label.check { display: flex; align-items: center; gap: 6px; margin: 10px 0; }
 td.ok { color: #22c55e; }
 td.error { color: #ef4444; }
 .mono.small { font-size: 11px; }
+
+.btn.warn { background: #d97706; border-color: #d97706; color: #fff; }
+.btn:disabled, .btn:disabled:hover { opacity: 0.35; cursor: not-allowed; background: transparent; border-color: rgba(148, 163, 184, 0.25); color: inherit; filter: grayscale(1); }

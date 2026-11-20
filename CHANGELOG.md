@@ -2,6 +2,11 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.5.1
+
+- Patches panel: Patch is amber when updates are pending and Reboot is amber when a reboot is needed. Both are disabled when there is nothing to do, and disabled buttons are clearly greyed out with a tooltip
+- Set up access explains a read-only disk in plain words, does not rewrite ~/.ssh permissions that are already correct, and clears an old error when you switch login method
+
 ## 0.5.0
 
 - Set up all hosts: one approval trusts each reachable host's key and installs QuietKeep's key with your SSH key, with a result for every host

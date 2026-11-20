@@ -6,9 +6,12 @@ use qk_ssh::{Command, Connection, Result};
 use crate::{tail, ActionReport, SUDOERS_PATH};
 
 const INSTALL_KEY: &str = r#"umask 077
-mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh" &&
-touch "$HOME/.ssh/authorized_keys" && chmod 600 "$HOME/.ssh/authorized_keys" &&
-{ grep -qxF "$1" "$HOME/.ssh/authorized_keys" || printf '%s\n' "$1" >> "$HOME/.ssh/authorized_keys"; }"#;
+d="$HOME/.ssh"; f="$d/authorized_keys"
+[ -d "$d" ] || mkdir -p "$d" || exit 1
+[ "$(stat -c %a "$d")" = 700 ] || chmod 700 "$d" || exit 1
+[ -f "$f" ] || touch "$f" || exit 1
+[ "$(stat -c %a "$f")" = 600 ] || chmod 600 "$f" || exit 1
+grep -qxF "$1" "$f" || printf '%s\n' "$1" >> "$f""#;
 
 const INSTALL_SUDOERS: &str = r#"tmp=$(mktemp) || exit 1
 printf '%s' "$1" > "$tmp" && visudo -cf "$tmp" >/dev/null && install -m 0440 -o root -g root "$tmp" "$2"

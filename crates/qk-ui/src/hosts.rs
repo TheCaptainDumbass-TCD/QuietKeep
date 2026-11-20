@@ -461,12 +461,12 @@ pub fn HostsPanel(hosts: RwSignal<Vec<Host>>, refresh: Callback<()>) -> impl Int
                                 <span>"Log in with"</span>
                                 <label class="check">
                                     <input type="radio" name="setup-method" prop:checked=move || setup_agent.get()
-                                        on:change={let h = h.clone(); move |_| { setup_agent.set(true); load_setup(h.clone()); }} />
+                                        on:change={let h = h.clone(); move |_| { setup_agent.set(true); setup_error.set(None); load_setup(h.clone()); }} />
                                     "My SSH key (ssh-agent)"
                                 </label>
                                 <label class="check">
                                     <input type="radio" name="setup-method" prop:checked=move || !setup_agent.get()
-                                        on:change={let h = h.clone(); move |_| { setup_agent.set(false); load_setup(h.clone()); }} />
+                                        on:change={let h = h.clone(); move |_| { setup_agent.set(false); setup_error.set(None); load_setup(h.clone()); }} />
                                     "Password"
                                 </label>
                             </div>

@@ -716,7 +716,13 @@ pub async fn setup_access(
     let result = async {
         let key = qk_collect::access::install_key(&conn, &public_key).await.map_err(err)?;
         if !key.success {
-            return Err(format!("Could not add the key: {}", key.output_tail.lines().last().unwrap_or("")));
+            let detail = key.output_tail.lines().last().unwrap_or("");
+            if detail.contains("Read-only file system") {
+                return Err(format!(
+                    "{name}'s disk is mounted read-only, so QuietKeep cannot add its key. Make the filesystem writable and try again."
+                ));
+            }
+            return Err(format!("Could not add the key: {detail}"));
         }
         if install_sudoers && !as_root {
             let rule = qk_collect::sudoers_rule(&h.spec.username, h.spec.os_type);

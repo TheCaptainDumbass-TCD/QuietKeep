@@ -184,15 +184,18 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                                 <td>{status}</td>
                                 <td class="actions">
                                     <button class="btn small" disabled=pending == 0
+                                        title={if pending == 0 { "No pending updates" } else { "Show pending packages" }}
                                         on:click=move |_| show(id, name_show.clone())>"Details"</button>
                                     <button class="btn small primary"
                                         disabled=move || !trusted || all_busy.get() || scanning.with(|s| s.contains(&id))
                                         on:click=move |_| scan_one(id, name_scan.clone())>"Scan"</button>
-                                    <button class="btn small"
+                                    <button class={if pending > 0 { "btn small warn" } else { "btn small" }}
                                         disabled=move || !trusted || pending == 0 || running.get().is_some()
+                                        title={if pending == 0 { "Nothing to patch" } else { "Apply pending updates" }}
                                         on:click=move |_| open_action(id, name_patch.clone(), "patch")>"Patch"</button>
-                                    <button class=if reboot_required { "btn small danger" } else { "btn small" }
-                                        disabled=move || !trusted || running.get().is_some()
+                                    <button class={if reboot_required { "btn small warn" } else { "btn small" }}
+                                        disabled=move || !trusted || !reboot_required || running.get().is_some()
+                                        title={if reboot_required { "This host needs a reboot" } else { "No reboot needed" }}
                                         on:click=move |_| open_action(id, name_reboot.clone(), "reboot")>"Reboot"</button>
                                 </td>
                             </tr>
