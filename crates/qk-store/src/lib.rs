@@ -18,6 +18,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0007_update_note.sql"),
     include_str!("migrations/0008_releases.sql"),
     include_str!("migrations/0009_pins.sql"),
+    include_str!("migrations/0010_finished.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -79,6 +80,9 @@ pub struct ContainerRow {
     pub major_tag: Option<String>,
     pub configured_image: Option<String>,
     pub latest_digest: Option<String>,
+    pub finished_at: Option<i64>,
+    /// Whole days since a stopped container stopped. Computed when read, never stored.
+    pub stopped_days: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -296,13 +300,13 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
             let mut ins = tx.prepare(
                 "INSERT OR REPLACE INTO containers
                  (host_id, name, image, state, status, project, service, config_file, update_available, update_note,
-                  update_kind, latest_tag, major_tag, configured_image, latest_digest)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                  update_kind, latest_tag, major_tag, configured_image, latest_digest, finished_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             )?;
             for c in containers {
                 ins.execute(params![
                     id, c.name, c.image, c.state, c.status, c.project, c.service, c.config_file, c.update_available,
-                    c.update_note, c.update_kind, c.latest_tag, c.major_tag, c.configured_image, c.latest_digest
+                    c.update_note, c.update_kind, c.latest_tag, c.major_tag, c.configured_image, c.latest_digest, c.finished_at
                 ])?;
             }
         }
@@ -342,7 +346,8 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
             .collect::<std::result::Result<_, _>>()?;
         let mut c_stmt = self.conn.prepare(
             "SELECT name, image, state, status, project, service, config_file, update_available, update_note, update_kind, latest_tag, major_tag,
-                    configured_image, latest_digest
+                    configured_image, latest_digest, finished_at,
+                    CASE WHEN finished_at IS NULL THEN NULL ELSE (unixepoch() - finished_at) / 86400 END
              FROM containers WHERE host_id = ?1 ORDER BY project IS NULL, project, name",
         )?;
         for h in &mut hosts {
@@ -363,6 +368,8 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
                         major_tag: r.get(11)?,
                         configured_image: r.get(12)?,
                         latest_digest: r.get(13)?,
+                        finished_at: r.get(14)?,
+                        stopped_days: r.get(15)?,
                     })
                 })?
                 .collect::<std::result::Result<_, _>>()?;
@@ -683,6 +690,8 @@ mod tests {
             major_tag: None,
             configured_image: Some("nginx:alpine".into()),
             latest_digest: None,
+            finished_at: None,
+            stopped_days: None,
         };
         store.record_docker(id, &[c.clone()]).unwrap();
         let d = &store.docker_status().unwrap()[0];

@@ -8,7 +8,7 @@ const ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
 application/vnd.docker.distribution.manifest.list.v2+json, \
 application/vnd.docker.distribution.manifest.v2+json, \
 application/vnd.oci.image.manifest.v1+json";
-const MAX_TAG_PAGES: usize = 20;
+const MAX_TAG_PAGES: usize = 3;
 const MAX_PROBES: usize = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

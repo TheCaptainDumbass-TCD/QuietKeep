@@ -28,6 +28,9 @@ pub struct Container {
     /// Image reference the container was created from, including any `@sha256:` pin.
     #[serde(default)]
     pub configured_image: Option<String>,
+    /// When a stopped container stopped, as unix time.
+    #[serde(default)]
+    pub finished_at: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -67,6 +70,7 @@ pub fn parse_ps(output: &str) -> Vec<Container> {
             update_note: None,
             local_digests: Vec::new(),
             configured_image: None,
+            finished_at: None,
         })
         .collect()
 }
@@ -101,11 +105,33 @@ pub const NOTE_NO_LOCAL: &str = "The local image has no registry digest. It was 
 pub const NOTE_REGISTRY: &str = "The registry could not be checked. It may be offline, private or rate limiting requests.";
 
 /// The image reference the container was created from, which keeps an `@sha256:` pin that `docker ps` drops.
-async fn configured_image(conn: &Connection, container: &str) -> Result<Option<String>> {
+async fn container_details(conn: &Connection, container: &str) -> Result<(Option<String>, Option<i64>)> {
     let out = conn
-        .run(&Command::new("docker").args(["inspect", container, "--format", "{{.Config.Image}}"]))
+        .run(&Command::new("docker").args(["inspect", container, "--format", "{{.Config.Image}}|{{.State.FinishedAt}}"]))
         .await?;
-    Ok(out.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+    if !out.success() {
+        return Ok((None, None));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let (image, finished) = text.split_once('|').unwrap_or((&text, ""));
+    Ok((Some(image.to_string()), rfc3339_to_unix(finished)))
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Parses Docker's UTC timestamps such as `2026-11-20T03:47:00.123456789Z`. Docker reports
+/// `0001-01-01T00:00:00Z` for containers that never stopped, which maps to `None`.
+pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
+    let n = |a: usize, b: usize| s.get(a..b)?.parse::<i64>().ok();
+    let (y, mo, d, h, mi, se) = (n(0, 4)?, n(5, 7)?, n(8, 10)?, n(11, 13)?, n(14, 16)?, n(17, 19)?);
+    (y >= 1970).then(|| days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + se)
 }
 
 /// Records each container's configured image and local digests. With `host_registry` set it
@@ -116,7 +142,9 @@ pub async fn check_updates(conn: &Connection, containers: &mut [Container], host
     let mut locals: HashMap<String, Vec<String>> = HashMap::new();
     let mut remotes: HashMap<String, Option<String>> = HashMap::new();
     for c in containers.iter_mut() {
-        c.configured_image = configured_image(conn, &c.name).await?;
+        let (image, finished) = container_details(conn, &c.name).await?;
+        c.configured_image = image;
+        c.finished_at = finished;
         if !locals.contains_key(&c.image) {
             let l = local_digests(conn, &c.image).await?.unwrap_or_default();
             locals.insert(c.image.clone(), l);
@@ -448,5 +476,15 @@ mod compose_tests {
         let c = serde_json::json!({"Name": "/x", "Config": {"Image": "x"}, "HostConfig": {"Privileged": true, "Devices": [{"PathOnHost": "/dev/dri"}], "NetworkMode": "mynet"}, "Mounts": []});
         let p = compose_from_inspect(&c, &serde_json::json!({}));
         assert_eq!(p.unsupported.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod time_tests {
+    #[test]
+    fn parses_docker_times() {
+        assert_eq!(super::rfc3339_to_unix("2026-11-20T03:47:00.123Z"), Some(1795146420));
+        assert_eq!(super::rfc3339_to_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(super::rfc3339_to_unix("0001-01-01T00:00:00Z"), None);
     }
 }

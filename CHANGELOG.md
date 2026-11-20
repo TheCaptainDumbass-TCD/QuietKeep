@@ -2,6 +2,12 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.8.1
+
+- Rollback copies are listed under each host's table instead of inside it, with how long ago they stopped and a Remove button. After 30 days QuietKeep highlights them and asks whether to remove them. Removing a copy never touches data volumes
+- When a registry cannot be reached or limits requests, QuietKeep keeps the last known result instead of showing Unknown
+- Fewer registry requests for images with very large tag lists, which avoids ghcr.io rate limits
+
 ## 0.8.0
 
 - Move pin: an image pinned to an older build can be pointed at the newest build of its tag, with a backup of the compose file

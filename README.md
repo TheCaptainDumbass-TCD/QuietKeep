@@ -33,7 +33,7 @@ Early development (0.8.x). QuietKeep is agentless and uses SSH. An optional host
 ## Install
 
 ```sh
-sudo apt install ./quietkeep_0.8.0_amd64.deb
+sudo apt install ./quietkeep_0.8.1_amd64.deb
 ```
 
 Tested on clean Debian 13 and Ubuntu 24.04 systems. Removing the package with `sudo apt remove quietkeep` leaves your data in place.
@@ -80,7 +80,7 @@ The package is written to `target/release/bundle/deb/`.
 Install the newer package the same way. apt sees that `quietkeep` is already installed and upgrades it in place, so there is no need to remove the old version first. Hosts, trusted keys and settings are kept.
 
 ```sh
-sudo apt install ./quietkeep_0.8.0_amd64.deb
+sudo apt install ./quietkeep_0.8.1_amd64.deb
 ```
 
 If QuietKeep is running in the tray during the upgrade, it shows a "QuietKeep was updated" banner. Click Restart to switch to the new version, or choose Quit from the tray menu and start it again.

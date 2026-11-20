@@ -216,6 +216,8 @@ pub struct ContainerRow {
     pub latest_tag: Option<String>,
     #[serde(default)]
     pub major_tag: Option<String>,
+    #[serde(default)]
+    pub stopped_days: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -446,4 +448,8 @@ pub async fn docker_move_preview(id: i64, container: String) -> Result<MovePrevi
 
 pub async fn docker_move_to_compose(id: i64, container: String) -> Result<String, String> {
     invoke("docker_move_to_compose", args(&ContainerArg { id, container })).await
+}
+
+pub async fn docker_remove_rollback(id: i64, container: String) -> Result<String, String> {
+    invoke("docker_remove_rollback", args(&ContainerArg { id, container })).await
 }

@@ -151,6 +151,7 @@ fn main() {
             commands::docker_update_pin,
             commands::docker_move_preview,
             commands::docker_move_to_compose,
+            commands::docker_remove_rollback,
             commands::kev_refresh,
             commands::kev_search,
             commands::metrics,

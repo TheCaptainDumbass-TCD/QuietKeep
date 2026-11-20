@@ -496,6 +496,13 @@ async fn assess_all(containers: &[qk_collect::docker::Container]) -> Vec<Option<
 
 async fn docker_one(app: &AppHandle, h: Host) -> CmdResult<()> {
     let registry = registry_choice(&app.state::<AppState>()) == Some(true);
+    // Results of the last scan, reused when a registry cannot be reached this time.
+    let previous: std::collections::HashMap<(String, String), qk_store::ContainerRow> = store(&app.state::<AppState>())
+        .docker_status()
+        .ok()
+        .and_then(|v| v.into_iter().find(|x| x.host_id == h.id))
+        .map(|x| x.containers.into_iter().map(|c| ((c.name.clone(), c.image.clone()), c)).collect())
+        .unwrap_or_default();
     let result = async {
         let conn = connect_trusted(app, &h).await?;
         let r = async {
@@ -539,7 +546,24 @@ async fn docker_one(app: &AppHandle, h: Host) -> CmdResult<()> {
                         major_tag: None,
                         configured_image: c.configured_image,
                         latest_digest: None,
+                        finished_at: c.finished_at,
+                        stopped_days: None,
                     };
+                    let a = a.and_then(|a| {
+                        let known = |k: &Option<String>| k.as_deref().is_some_and(|k| k != "unknown");
+                        match previous.get(&(row.name.clone(), row.image.clone())) {
+                            Some(p) if a.kind == "unknown" && known(&p.update_kind) => {
+                                row.update_available = p.update_available;
+                                row.update_note = p.update_note.clone();
+                                row.update_kind = p.update_kind.clone();
+                                row.latest_tag = p.latest_tag.clone();
+                                row.major_tag = p.major_tag.clone();
+                                row.latest_digest = p.latest_digest.clone();
+                                None
+                            }
+                            _ => Some(a),
+                        }
+                    });
                     if let Some(a) = a {
                         row.latest_digest = a.digest;
                         row.update_available = a.update_available;
@@ -1080,6 +1104,32 @@ pub async fn docker_move_to_compose(app: AppHandle, id: i64, container: String) 
         Err(m) => ("docker.move_failed", m.clone()),
     };
     store(&app.state::<AppState>()).log_activity(kind, Some(id), &msg).map_err(err)?;
+    let _ = docker_one(&app, h).await;
+    result
+}
+
+/// Removes a stopped `*-old` copy that was kept so an update or move could be undone. Named
+/// volumes are left alone, so the running container keeps its data.
+#[tauri::command]
+pub async fn docker_remove_rollback(app: AppHandle, id: i64, container: String) -> CmdResult<String> {
+    let row = container_row(&app.state::<AppState>(), id, &container)?;
+    if !row.name.ends_with("-old") || row.state == "running" {
+        return Err("Only stopped rollback copies can be removed here.".into());
+    }
+    let h = host(&app.state::<AppState>(), id)?;
+    let name = h.spec.name.clone();
+    let conn = connect_trusted(&app, &h).await?;
+    let r = conn.run(&Command::new("docker").args(["rm", &container])).await.map_err(err);
+    let _ = conn.close().await;
+    let result = match r {
+        Ok(o) if o.success() => Ok(format!("Removed the rollback copy {container} from {name}.")),
+        Ok(o) => Err(format!("Removing {container} failed: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        Err(e) => Err(e),
+    };
+    let msg = match &result {
+        Ok(m) | Err(m) => m.clone(),
+    };
+    store(&app.state::<AppState>()).log_activity("docker.remove_rollback", Some(id), &msg).map_err(err)?;
     let _ = docker_one(&app, h).await;
     result
 }

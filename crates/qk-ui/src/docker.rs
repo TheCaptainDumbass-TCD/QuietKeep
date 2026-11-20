@@ -191,6 +191,21 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
         })
     };
 
+    let remove_dialog = RwSignal::new(None::<(i64, String, String)>);
+    let confirm_remove = move |_| {
+        let Some((id, host, container)) = remove_dialog.get_untracked() else { return };
+        remove_dialog.set(None);
+        busy.set(true);
+        notice.set(Some(format!("Removing {container} from {host}...")));
+        spawn_local(async move {
+            match api::docker_remove_rollback(id, container).await {
+                Ok(m) | Err(m) => notice.set(Some(m)),
+            }
+            busy.set(false);
+            load();
+            refresh.run(());
+        })
+    };
     let count = move |f: fn(&api::ContainerRow) -> bool| {
         hosts.with(|h| h.iter().flat_map(|h| h.containers.iter()).filter(|c| f(c)).count())
     };
@@ -250,7 +265,7 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                                 <colgroup><col class="c-name"/><col class="c-image"/><col class="c-project"/><col class="c-state"/><col class="c-update"/><col class="c-action"/></colgroup>
                                 <thead><tr><th>"Container"</th><th>"Image"</th><th>"Project"</th><th>"State"</th><th>"Image update"</th><th></th></tr></thead>
                                 <tbody>
-                                    {h.containers.clone().into_iter().map(|c| {
+                                    {h.containers.clone().into_iter().filter(|c| !(c.name.ends_with("-old") && c.state != "running")).map(|c| {
                                         let host = host_name.clone();
                                         let note = c.update_note.clone().unwrap_or_default();
                                         let kind = c.update_kind.clone().unwrap_or_default();
@@ -325,6 +340,29 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                                     }).collect_view()}
                                 </tbody>
                             </table>
+                            {
+                                let olds: Vec<api::ContainerRow> = h.containers.iter().filter(|c| c.name.ends_with("-old") && c.state != "running").cloned().collect();
+                                let hn = host_name.clone();
+                                (!olds.is_empty()).then(move || view! {
+                                    <div class="rollback-list">
+                                        {olds.into_iter().map(|c| {
+                                            let days = c.stopped_days.unwrap_or(0);
+                                            let due = days >= 30;
+                                            let cname = c.name.clone();
+                                            let hn = hn.clone();
+                                            let text = format!("Rollback copy {} ({}), stopped {} days ago.", c.name, c.image, days);
+                                            view! {
+                                                <div class={if due { "rollback due" } else { "rollback" }}>
+                                                    <span>{text}</span>
+                                                    {due.then(|| view! { <span>" Kept for 30 days. Remove it?"</span> })}
+                                                    <button class={if due { "btn small warn" } else { "btn small" }} disabled=move || busy.get()
+                                                        on:click=move |_| remove_dialog.set(Some((id, hn.clone(), cname.clone())))>"Remove"</button>
+                                                </div>
+                                            }
+                                        }).collect_view()}
+                                    </div>
+                                })
+                            }
                         </Show>
                     </section>
                 }
@@ -347,6 +385,20 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                         <div class="modal-actions">
                             <button class="btn" on:click=move |_| tag_dialog.set(None)>"Cancel"</button>
                             <button class="btn warn" on:click=confirm_tag>{if d.pin { "Move pin".to_string() } else { format!("Update to {}", d.preview.new_image) }}</button>
+                        </div>
+                    })}
+                </div>
+            </div>
+        </Show>
+        <Show when=move || remove_dialog.with(|d| d.is_some())>
+            <div class="modal-backdrop">
+                <div class="modal">
+                    {move || remove_dialog.get().map(|(_, host, container)| view! {
+                        <h2>{format!("Remove {container} from {host}?")}</h2>
+                        <p>"This deletes the stopped rollback copy, so you can no longer switch back to it. Data volumes are not touched, and the running container keeps all its data."</p>
+                        <div class="modal-actions">
+                            <button class="btn" on:click=move |_| remove_dialog.set(None)>"Cancel"</button>
+                            <button class="btn danger" on:click=confirm_remove>"Remove rollback copy"</button>
                         </div>
                     })}
                 </div>
