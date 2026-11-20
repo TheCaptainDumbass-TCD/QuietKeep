@@ -417,3 +417,33 @@ pub async fn docker_tag_preview(id: i64, container: String, major: bool) -> Resu
 pub async fn docker_update_tag(id: i64, container: String, major: bool) -> Result<String, String> {
     invoke("docker_update_tag", args(&TagArg { id, container, major })).await
 }
+
+#[derive(Serialize)]
+struct ContainerArg {
+    id: i64,
+    container: String,
+}
+
+pub async fn docker_pin_preview(id: i64, container: String) -> Result<TagUpdatePreview, String> {
+    invoke("docker_pin_preview", args(&ContainerArg { id, container })).await
+}
+
+pub async fn docker_update_pin(id: i64, container: String) -> Result<String, String> {
+    invoke("docker_update_pin", args(&ContainerArg { id, container })).await
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct MovePreview {
+    pub file: String,
+    pub yaml: String,
+    pub unsupported: Vec<String>,
+    pub steps: Vec<String>,
+}
+
+pub async fn docker_move_preview(id: i64, container: String) -> Result<MovePreview, String> {
+    invoke("docker_move_preview", args(&ContainerArg { id, container })).await
+}
+
+pub async fn docker_move_to_compose(id: i64, container: String) -> Result<String, String> {
+    invoke("docker_move_to_compose", args(&ContainerArg { id, container })).await
+}

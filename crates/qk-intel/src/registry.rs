@@ -311,10 +311,12 @@ pub struct Assessment {
     pub latest_tag: Option<String>,
     pub major_tag: Option<String>,
     pub note: Option<String>,
+    /// Digest the registry serves for the tag, when it was looked up.
+    pub digest: Option<String>,
 }
 
 fn unknown(note: String) -> Assessment {
-    Assessment { update_available: None, kind: "unknown", latest_tag: None, major_tag: None, note: Some(note) }
+    Assessment { update_available: None, kind: "unknown", latest_tag: None, major_tag: None, note: Some(note), digest: None }
 }
 
 /// Compares a running image with its registry: newer releases of the same kind of tag,
@@ -379,22 +381,23 @@ pub fn assess(client: &mut Client, reference: &str, local_digests: &[String]) ->
             latest_tag: newer.same_series,
             major_tag: newer.major,
             note: Some(note),
+            digest: Some(current),
         };
     }
     let rebuilt = !current.is_empty() && !local_digests.is_empty() && !local_digests.iter().any(|d| d.ends_with(&current));
     if let Some(t) = newer.same_series {
-        return Assessment { update_available: Some(true), kind: "release", latest_tag: Some(t), major_tag: newer.major, note: major_note };
+        return Assessment { update_available: Some(true), kind: "release", latest_tag: Some(t), major_tag: newer.major, note: major_note, digest: None };
     }
     if rebuilt {
-        return Assessment { update_available: Some(true), kind: "rebuild", latest_tag: None, major_tag: newer.major, note: major_note };
+        return Assessment { update_available: Some(true), kind: "rebuild", latest_tag: None, major_tag: newer.major, note: major_note, digest: Some(current) };
     }
     if newer.major.is_some() {
-        return Assessment { update_available: Some(false), kind: "major", latest_tag: None, major_tag: newer.major, note: major_note };
+        return Assessment { update_available: Some(false), kind: "major", latest_tag: None, major_tag: newer.major, note: major_note, digest: Some(current) };
     }
     if local_digests.is_empty() {
         return unknown("The local image has no registry digest. It was built locally or loaded from a file.".into());
     }
-    Assessment { update_available: Some(false), kind: "current", latest_tag: None, major_tag: None, note: None }
+    Assessment { update_available: Some(false), kind: "current", latest_tag: None, major_tag: None, note: None, digest: Some(current) }
 }
 
 const CACHE_TTL: Duration = Duration::from_secs(3 * 3600);

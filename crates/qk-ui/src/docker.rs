@@ -17,7 +17,16 @@ struct TagDialog {
     id: i64,
     host: String,
     container: String,
+    pin: bool,
     preview: api::TagUpdatePreview,
+}
+
+#[derive(Clone)]
+struct MoveDialog {
+    id: i64,
+    host: String,
+    container: String,
+    preview: api::MovePreview,
 }
 
 /// Database images whose data format can change between major versions.
@@ -35,6 +44,7 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
     let busy = RwSignal::new(false);
     let dialog = RwSignal::new(None::<UpdateDialog>);
     let tag_dialog = RwSignal::new(None::<TagDialog>);
+    let move_dialog = RwSignal::new(None::<MoveDialog>);
     let registry = RwSignal::new(None::<bool>);
     spawn_local(async move {
         if let Ok(r) = api::registry_state().await {
@@ -119,9 +129,46 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
     let open_tag = move |id: i64, host: String, container: String, major: bool| {
         spawn_local(async move {
             match api::docker_tag_preview(id, container.clone(), major).await {
-                Ok(preview) => tag_dialog.set(Some(TagDialog { id, host, container, preview })),
+                Ok(preview) => tag_dialog.set(Some(TagDialog { id, host, container, pin: false, preview })),
                 Err(e) => notice.set(Some(e)),
             }
+        })
+    };
+    let open_pin = move |id: i64, host: String, container: String| {
+        spawn_local(async move {
+            match api::docker_pin_preview(id, container.clone()).await {
+                Ok(preview) => tag_dialog.set(Some(TagDialog { id, host, container, pin: true, preview })),
+                Err(e) => notice.set(Some(e)),
+            }
+        })
+    };
+    let open_move = move |id: i64, host: String, container: String| {
+        notice.set(Some(format!("Reading the settings of {container} on {host}...")));
+        busy.set(true);
+        spawn_local(async move {
+            let r = api::docker_move_preview(id, container.clone()).await;
+            busy.set(false);
+            match r {
+                Ok(preview) => {
+                    notice.set(None);
+                    move_dialog.set(Some(MoveDialog { id, host, container, preview }));
+                }
+                Err(e) => notice.set(Some(e)),
+            }
+        })
+    };
+    let confirm_move = move |_| {
+        let Some(d) = move_dialog.get_untracked() else { return };
+        move_dialog.set(None);
+        busy.set(true);
+        notice.set(Some(format!("Moving {} on {} to docker compose...", d.container, d.host)));
+        spawn_local(async move {
+            match api::docker_move_to_compose(d.id, d.container).await {
+                Ok(m) | Err(m) => notice.set(Some(m)),
+            }
+            busy.set(false);
+            load();
+            refresh.run(());
         })
     };
     let confirm_tag = move |_| {
@@ -130,7 +177,12 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
         busy.set(true);
         notice.set(Some(format!("Updating {} on {} to {}...", d.container, d.host, d.preview.new_image)));
         spawn_local(async move {
-            match api::docker_update_tag(d.id, d.container, d.preview.major).await {
+            let r = if d.pin {
+                api::docker_update_pin(d.id, d.container).await
+            } else {
+                api::docker_update_tag(d.id, d.container, d.preview.major).await
+            };
+            match r {
                 Ok(m) | Err(m) => notice.set(Some(m)),
             }
             busy.set(false);
@@ -205,7 +257,9 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                                         let latest = c.latest_tag.clone().unwrap_or_default();
                                         let major = c.major_tag.clone().unwrap_or_default();
                                         let compose = c.config_file.is_some();
+                                        let rollback = c.name.ends_with("-old") && c.state != "running";
                                         let update = match (kind.as_str(), c.update_available) {
+                                            _ if rollback => view! { <span class="pill held" title="A stopped copy kept so an update or move can be undone. Remove it with docker rm once the new container works.">"Kept for rollback"</span> }.into_any(),
                                             ("release", _) => view! { <span class="pill warn" title=note.clone()>{format!("{latest} available")}</span> }.into_any(),
                                             ("rebuild", _) => view! { <span class="pill warn" title="The same tag now points to a newer build">"New build"</span> }.into_any(),
                                             ("major", _) => view! { <span class="pill held" title=note.clone()>{format!("Major {major} available")}</span> }.into_any(),
@@ -222,7 +276,19 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                                         let cname = c.name.clone();
                                         let host_t = host.clone();
                                         let database = is_database(&c.image);
+                                        let running = c.state == "running";
                                         let action = match (kind.as_str(), c.project.clone(), compose) {
+                                            _ if rollback => ().into_any(),
+                                            ("pinned-behind", _, true) => view! {
+                                                <button class="btn small warn" disabled=move || busy.get()
+                                                    title="Point the pin at the newest build of the same tag"
+                                                    on:click=move |_| open_pin(id, host_t.clone(), cname.clone())>"Move pin"</button>
+                                            }.into_any(),
+                                            (_, None, false) if running => view! {
+                                                <button class="btn small" disabled=move || busy.get()
+                                                    title="Create a compose file from this container's settings so QuietKeep can update it"
+                                                    on:click=move |_| open_move(id, host_t.clone(), cname.clone())>"Move to compose"</button>
+                                            }.into_any(),
                                             ("release", _, true) => {
                                                 let label = format!("Update to {latest}");
                                                 view! {
@@ -269,7 +335,7 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
             <div class="modal-backdrop">
                 <div class="modal wide">
                     {move || tag_dialog.get().map(|d| view! {
-                        <h2>{format!("Update {} on {}?", d.container, d.host)}</h2>
+                        <h2>{if d.pin { format!("Move the pin of {} on {}?", d.container, d.host) } else { format!("Update {} on {}?", d.container, d.host) }}</h2>
                         <p>{format!("QuietKeep will back up {}, change this one line and then pull and recreate the project:", d.preview.file)}</p>
                         <p class="fingerprint mono">{format!("image: {}", d.preview.old_image)}</p>
                         <p class="fingerprint mono">{format!("image: {}", d.preview.new_image)}</p>
@@ -280,8 +346,31 @@ pub fn DockerPanel(refresh: Callback<()>) -> impl IntoView {
                         {d.preview.commands.iter().map(|c| view! { <p class="fingerprint mono">{c.clone()}</p> }).collect_view()}
                         <div class="modal-actions">
                             <button class="btn" on:click=move |_| tag_dialog.set(None)>"Cancel"</button>
-                            <button class="btn warn" on:click=confirm_tag>{format!("Update to {}", d.preview.new_image)}</button>
+                            <button class="btn warn" on:click=confirm_tag>{if d.pin { "Move pin".to_string() } else { format!("Update to {}", d.preview.new_image) }}</button>
                         </div>
+                    })}
+                </div>
+            </div>
+        </Show>
+        <Show when=move || move_dialog.with(|d| d.is_some())>
+            <div class="modal-backdrop">
+                <div class="modal wide">
+                    {move || move_dialog.get().map(|d| {
+                        let blocked = !d.preview.unsupported.is_empty();
+                        view! {
+                            <h2>{format!("Move {} on {} to docker compose?", d.container, d.host)}</h2>
+                            <p>{format!("QuietKeep will create {} from the container's current settings. Values of environment variables are hidden here but kept in the file.", d.preview.file)}</p>
+                            <pre class="fingerprint mono yaml">{d.preview.yaml.clone()}</pre>
+                            {blocked.then(|| view! {
+                                <p class="error">{format!("QuietKeep cannot copy these settings, so move this container by hand: {}.", d.preview.unsupported.join(", "))}</p>
+                            })}
+                            <p class="muted">"Exact steps:"</p>
+                            {d.preview.steps.iter().map(|c| view! { <p class="fingerprint mono">{c.clone()}</p> }).collect_view()}
+                            <div class="modal-actions">
+                                <button class="btn" on:click=move |_| move_dialog.set(None)>"Cancel"</button>
+                                <button class="btn warn" disabled=blocked on:click=confirm_move>"Move to compose"</button>
+                            </div>
+                        }
                     })}
                 </div>
             </div>

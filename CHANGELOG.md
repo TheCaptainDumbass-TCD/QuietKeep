@@ -2,6 +2,14 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.8.0
+
+- Move pin: an image pinned to an older build can be pointed at the newest build of its tag, with a backup of the compose file
+- Image tags set through a `.env` variable (such as Immich's `IMMICH_VERSION`) are updated in the `.env` file, after a backup
+- Move to compose: a container started with `docker run` can be moved to a compose file built from its current settings. The preview hides environment values, settings QuietKeep cannot copy block the move, and the original container is kept stopped for rollback. If the new container does not start, the original is started again
+- Stopped rollback copies show Kept for rollback instead of update actions
+- Table row lines no longer break next to empty action cells
+
 ## 0.7.0
 
 - Docker release tracking: with your permission QuietKeep reads tag lists and digests from the registries your images come from (Docker Hub, ghcr.io, quay.io, codeberg.org and others). It never logs in or pulls. A new release of the same kind of tag shows as "v0.13.4 available"

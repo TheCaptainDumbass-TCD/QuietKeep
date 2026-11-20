@@ -245,3 +245,7 @@ td.error { color: #ef4444; }
 
 .card.permission-card { border: 1px solid rgba(59, 130, 246, 0.55); border-left: 4px solid #3b82f6; background: rgba(59, 130, 246, 0.08); margin-bottom: 16px; }
 .card.permission-card h3 { margin-top: 0; }
+
+td.actions { display: table-cell; text-align: right; white-space: nowrap; }
+td.actions > * + * { margin-left: 6px; }
+pre.yaml { white-space: pre; overflow-x: auto; max-height: 320px; text-align: left; }

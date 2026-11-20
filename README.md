@@ -4,7 +4,7 @@ Standalone desktop app for Debian 13 and Ubuntu that keeps a small to medium hom
 
 ## Status
 
-Early development (0.7.x). QuietKeep is agentless and uses SSH. An optional host agent is planned. Version 1.0.0 will be the first public release.
+Early development (0.8.x). QuietKeep is agentless and uses SSH. An optional host agent is planned. Version 1.0.0 will be the first public release.
 
 ## Features
 
@@ -15,7 +15,7 @@ Early development (0.7.x). QuietKeep is agentless and uses SSH. An optional host
 - Held back apt updates (phased by Ubuntu or kept back) shown apart from installable ones
 - Host telemetry charts for load, memory, root disk and uptime
 - Confirmed patching and rebooting through an exact command sudoers rule
-- Docker inventory with release tracking, pinned image checks and confirmed compose updates
+- Docker inventory with release tracking, pin moves, `.env` tag updates, moving `docker run` containers to compose and confirmed compose updates
 - CISA KEV catalog with offline search, downloaded only after you allow it
 - Scheduled background scans from the tray, off by default
 - Panels you can hide and reorder
@@ -33,7 +33,7 @@ Early development (0.7.x). QuietKeep is agentless and uses SSH. An optional host
 ## Install
 
 ```sh
-sudo apt install ./quietkeep_0.7.0_amd64.deb
+sudo apt install ./quietkeep_0.8.0_amd64.deb
 ```
 
 Tested on clean Debian 13 and Ubuntu 24.04 systems. Removing the package with `sudo apt remove quietkeep` leaves your data in place.
@@ -80,7 +80,7 @@ The package is written to `target/release/bundle/deb/`.
 Install the newer package the same way. apt sees that `quietkeep` is already installed and upgrades it in place, so there is no need to remove the old version first. Hosts, trusted keys and settings are kept.
 
 ```sh
-sudo apt install ./quietkeep_0.7.0_amd64.deb
+sudo apt install ./quietkeep_0.8.0_amd64.deb
 ```
 
 If QuietKeep is running in the tray during the upgrade, it shows a "QuietKeep was updated" banner. Click Restart to switch to the new version, or choose Quit from the tray menu and start it again.

@@ -537,8 +537,11 @@ async fn docker_one(app: &AppHandle, h: Host) -> CmdResult<()> {
                         update_kind: None,
                         latest_tag: None,
                         major_tag: None,
+                        configured_image: c.configured_image,
+                        latest_digest: None,
                     };
                     if let Some(a) = a {
+                        row.latest_digest = a.digest;
                         row.update_available = a.update_available;
                         row.update_note = a.note;
                         row.update_kind = Some(a.kind.to_string());
@@ -854,79 +857,227 @@ pub struct TagUpdatePreview {
     commands: Vec<String>,
 }
 
-fn replace_tag(image: &str, tag: &str) -> String {
+fn image_repository(image: &str) -> String {
     let base = image.split('@').next().unwrap_or(image);
     let slash = base.rfind('/');
-    let name = match base.rfind(':') {
-        Some(c) if slash.is_none_or(|s| c > s) => &base[..c],
-        _ => base,
-    };
-    format!("{name}:{tag}")
+    match base.rfind(':') {
+        Some(c) if slash.is_none_or(|s| c > s) => base[..c].to_string(),
+        _ => base.to_string(),
+    }
 }
 
-/// Compose file, current image and new image for moving a container to a newer release.
-fn tag_update_target(state: &State<'_, AppState>, id: i64, container: &str, major: bool) -> CmdResult<(String, String, String)> {
-    let row = store(state)
+fn image_tag(image: &str) -> String {
+    qk_intel::registry::parse_ref(image).map(|r| r.tag).unwrap_or_default()
+}
+
+fn container_row(state: &State<'_, AppState>, id: i64, container: &str) -> CmdResult<qk_store::ContainerRow> {
+    store(state)
         .docker_status()
         .map_err(err)?
         .into_iter()
         .find(|h| h.host_id == id)
         .and_then(|h| h.containers.into_iter().find(|c| c.name == container))
-        .ok_or_else(|| "This container is not in the last scan. Scan the host again.".to_string())?;
-    let file = row.config_file.ok_or_else(|| {
-        "This container was not started with docker compose, so QuietKeep cannot change its image. Pull the new image and recreate the container by hand.".to_string()
-    })?;
-    let tag = if major { row.major_tag } else { row.latest_tag }
+        .ok_or_else(|| "This container is not in the last scan. Scan the host again.".to_string())
+}
+
+fn compose_file_of(row: &qk_store::ContainerRow) -> CmdResult<String> {
+    row.config_file.clone().ok_or_else(|| {
+        "This container was not started with docker compose. Use Move to compose first.".to_string()
+    })
+}
+
+/// Compose file, current image and new image for moving a container to a newer release.
+fn tag_update_target(state: &State<'_, AppState>, id: i64, container: &str, major: bool) -> CmdResult<(String, String, String)> {
+    let row = container_row(state, id, container)?;
+    let file = compose_file_of(&row)?;
+    let tag = if major { row.major_tag.clone() } else { row.latest_tag.clone() }
         .ok_or_else(|| "No newer release is known. Scan the host again.".to_string())?;
-    let repo = qk_intel::registry::parse_ref(&row.image).map(|r| r.repository).unwrap_or_default();
-    if major && qk_intel::registry::is_database(&repo) {
+    if major && qk_intel::registry::is_database(&image_repository(&row.image)) {
         return Err("Database major upgrades need a data migration, so QuietKeep does not do them. Follow the image's upgrade guide.".into());
     }
-    let new_image = replace_tag(&row.image, &tag);
+    let new_image = format!("{}:{tag}", image_repository(&row.image));
     Ok((file, row.image, new_image))
+}
+
+fn preview_steps(file: &str, old: &str, new: &str, env: bool) -> Vec<String> {
+    let mut steps = vec![
+        format!("cp -p {file} {file}.quietkeep-<date>.bak"),
+        format!("In {file}: image: {old}  becomes  image: {new}"),
+    ];
+    if env {
+        steps.push(format!(
+            "If the tag comes from a variable, the variable in the .env file next to {file} is changed instead, after its own backup"
+        ));
+    }
+    steps.extend(qk_collect::docker::compose_update_commands(file).iter().map(|c| c.as_str().to_string()));
+    steps
 }
 
 #[tauri::command]
 pub fn docker_tag_preview(state: State<'_, AppState>, id: i64, container: String, major: bool) -> CmdResult<TagUpdatePreview> {
     let (file, old_image, new_image) = tag_update_target(&state, id, &container, major)?;
-    let mut commands = vec![
-        format!("cp -p {file} {file}.quietkeep-<date>.bak"),
-        format!("In {file}: image: {old_image}  becomes  image: {new_image}"),
-    ];
-    commands.extend(qk_collect::docker::compose_update_commands(&file).iter().map(|c| c.as_str().to_string()));
+    let commands = preview_steps(&file, &old_image, &new_image, true);
     Ok(TagUpdatePreview { file, old_image, new_image, major, commands })
 }
 
-#[tauri::command]
-pub async fn docker_update_tag(app: AppHandle, id: i64, container: String, major: bool) -> CmdResult<String> {
-    let (file, old, new) = tag_update_target(&app.state::<AppState>(), id, &container, major)?;
+/// Backs up and edits the compose file (or its .env variable), then pulls and recreates the project.
+async fn apply_image_change(
+    app: &AppHandle,
+    id: i64,
+    container: &str,
+    file: &str,
+    old: &str,
+    new: &str,
+    env: Option<(String, String, String)>,
+) -> CmdResult<String> {
     let h = host(&app.state::<AppState>(), id)?;
     let name = h.spec.name.clone();
-    let conn = connect_trusted(&app, &h).await?;
+    let conn = connect_trusted(app, &h).await?;
     let result = async {
-        let edit = conn.run(&qk_collect::docker::set_image_command(&file, &old, &new)).await.map_err(err)?;
-        if !edit.success() {
-            return Err(match edit.exit_status {
-                Some(4) => format!("The line image: {old} was not found in {file}. The image may be set through a variable, so change it by hand."),
-                Some(3) => format!("QuietKeep cannot write {file}. Check its owner and permissions."),
-                _ => format!("Changing {file} failed: {}", String::from_utf8_lossy(&edit.stdout).trim()),
-            });
-        }
-        let backup = String::from_utf8_lossy(&edit.stdout).trim().to_string();
-        let r = qk_collect::docker::update_compose(&conn, &file).await.map_err(err)?;
+        let edit = conn.run(&qk_collect::docker::set_image_command(file, old, new)).await.map_err(err)?;
+        let backup = if edit.success() {
+            String::from_utf8_lossy(&edit.stdout).trim().to_string()
+        } else if edit.exit_status == Some(4) {
+            let Some((repo, old_tag, new_tag)) = &env else {
+                return Err(format!("The line image: {old} was not found in {file}, so change it by hand."));
+            };
+            let e = conn
+                .run(&qk_collect::docker::set_env_tag_command(file, repo, old_tag, new_tag))
+                .await
+                .map_err(err)?;
+            if !e.success() {
+                return Err(match e.exit_status {
+                    Some(3) => format!("QuietKeep cannot write the .env file next to {file}. Check its owner and permissions."),
+                    _ => format!("The line image: {old} was not found in {file} and no matching .env variable was found, so change it by hand."),
+                });
+            }
+            String::from_utf8_lossy(&e.stdout).trim().to_string()
+        } else if edit.exit_status == Some(3) {
+            return Err(format!("QuietKeep cannot write {file}. Check its owner and permissions."));
+        } else {
+            return Err(format!("Changing {file} failed: {}", String::from_utf8_lossy(&edit.stdout).trim()));
+        };
+        let r = qk_collect::docker::update_compose(&conn, file).await.map_err(err)?;
         if !r.success {
             return Err(format!(
-                "{file} now uses {new} (backup {backup}), but the update failed: {}",
+                "The file now uses {new} (backup {backup}), but the update failed: {}",
                 r.output_tail.lines().last().unwrap_or("")
             ));
         }
-        Ok(format!("Updated {container} on {name} to {new}. The old compose file is saved as {backup}."))
+        Ok(format!("Updated {container} on {name} to {new}. The previous file is saved as {backup}."))
     }
     .await;
     let _ = conn.close().await;
     let (kind, msg) = match &result {
         Ok(m) => ("docker.update", m.clone()),
         Err(m) => ("docker.update_failed", m.clone()),
+    };
+    store(&app.state::<AppState>()).log_activity(kind, Some(id), &msg).map_err(err)?;
+    let _ = docker_one(app, h).await;
+    result
+}
+
+#[tauri::command]
+pub async fn docker_update_tag(app: AppHandle, id: i64, container: String, major: bool) -> CmdResult<String> {
+    let (file, old, new) = tag_update_target(&app.state::<AppState>(), id, &container, major)?;
+    let env = Some((image_repository(&old), image_tag(&old), image_tag(&new)));
+    apply_image_change(&app, id, &container, &file, &old, &new, env).await
+}
+
+/// Compose file, pinned image and the same image pinned to the tag's newest build.
+fn pin_target(state: &State<'_, AppState>, id: i64, container: &str) -> CmdResult<(String, String, String)> {
+    let row = container_row(state, id, container)?;
+    let file = compose_file_of(&row)?;
+    let old = row
+        .configured_image
+        .clone()
+        .filter(|i| i.contains("@sha256:"))
+        .ok_or_else(|| "This container is not pinned to a digest.".to_string())?;
+    let digest = row.latest_digest.clone().ok_or_else(|| "The newest build is not known yet. Scan the host again.".to_string())?;
+    let new = format!("{}@{digest}", old.split('@').next().unwrap_or(&old));
+    if new == old {
+        return Err("The pin already points to the newest build.".into());
+    }
+    Ok((file, old, new))
+}
+
+#[tauri::command]
+pub fn docker_pin_preview(state: State<'_, AppState>, id: i64, container: String) -> CmdResult<TagUpdatePreview> {
+    let (file, old_image, new_image) = pin_target(&state, id, &container)?;
+    let commands = preview_steps(&file, &old_image, &new_image, false);
+    Ok(TagUpdatePreview { file, old_image, new_image, major: false, commands })
+}
+
+#[tauri::command]
+pub async fn docker_update_pin(app: AppHandle, id: i64, container: String) -> CmdResult<String> {
+    let (file, old, new) = pin_target(&app.state::<AppState>(), id, &container)?;
+    apply_image_change(&app, id, &container, &file, &old, &new, None).await
+}
+
+#[derive(Serialize)]
+pub struct MovePreview {
+    file: String,
+    yaml: String,
+    unsupported: Vec<String>,
+    steps: Vec<String>,
+}
+
+async fn move_plan(app: &AppHandle, id: i64, container: &str) -> CmdResult<(Host, qk_collect::docker::ComposePlan)> {
+    let h = host(&app.state::<AppState>(), id)?;
+    let conn = connect_trusted(app, &h).await?;
+    let r = qk_collect::docker::inspect(&conn, container).await.map_err(err);
+    let _ = conn.close().await;
+    let (c, i) = r?.ok_or_else(|| format!("{container} was not found on {}.", h.spec.name))?;
+    if c["Config"]["Labels"]["com.docker.compose.project"].is_string() {
+        return Err("This container is already managed by docker compose.".into());
+    }
+    Ok((h, qk_collect::docker::compose_from_inspect(&c, &i)))
+}
+
+#[tauri::command]
+pub async fn docker_move_preview(app: AppHandle, id: i64, container: String) -> CmdResult<MovePreview> {
+    let (_, plan) = move_plan(&app, id, &container).await?;
+    let file = format!("~/{container}/compose.yaml");
+    let steps = vec![
+        format!("Write {file}, readable only by you"),
+        format!("docker compose -f {file} pull"),
+        format!("docker stop {container}, then rename it to {container}-quietkeep-old"),
+        format!("docker compose -f {file} up -d"),
+        "If the new container does not start, the original is renamed back and started again".to_string(),
+    ];
+    Ok(MovePreview { file, yaml: plan.masked, unsupported: plan.unsupported, steps })
+}
+
+#[tauri::command]
+pub async fn docker_move_to_compose(app: AppHandle, id: i64, container: String) -> CmdResult<String> {
+    let (h, plan) = move_plan(&app, id, &container).await?;
+    if !plan.unsupported.is_empty() {
+        return Err(format!("QuietKeep cannot copy these settings: {}.", plan.unsupported.join(", ")));
+    }
+    let name = h.spec.name.clone();
+    let conn = connect_trusted(&app, &h).await?;
+    let r = conn
+        .run_with_stdin(&qk_collect::docker::move_to_compose_command(&container, &plan.restart), Some(plan.yaml.as_bytes()))
+        .await
+        .map_err(err);
+    let _ = conn.close().await;
+    let result = match r {
+        Ok(o) if o.success() => {
+            let out = String::from_utf8_lossy(&o.stdout).to_string();
+            let mut lines = out.lines().rev();
+            let old = lines.next().unwrap_or_default().to_string();
+            let file = lines.next().unwrap_or_default().to_string();
+            Ok(format!("{container} on {name} now runs from {file}. The original container is stopped and kept as {old} for rollback."))
+        }
+        Ok(o) => Err(format!(
+            "Moving {container} to compose failed: {}",
+            String::from_utf8_lossy(&o.stdout).lines().last().unwrap_or("")
+        )),
+        Err(e) => Err(e),
+    };
+    let (kind, msg) = match &result {
+        Ok(m) => ("docker.move", m.clone()),
+        Err(m) => ("docker.move_failed", m.clone()),
     };
     store(&app.state::<AppState>()).log_activity(kind, Some(id), &msg).map_err(err)?;
     let _ = docker_one(&app, h).await;

@@ -170,6 +170,182 @@ pub fn set_image_command(file: &str, old: &str, new: &str) -> Command {
     Command::new("sh").args(["-c", SET_IMAGE, "sh", file, old, new])
 }
 
+pub(crate) const SET_ENV_TAG: &str = r#"f=$1; repo=$2; old=$3; new=$4; e="$(dirname "$f")/.env"
+var=$(grep -E '^[[:space:]]*image:' "$f" | grep -F "$repo:\${" | sed -n 's/.*:\${\([A-Za-z0-9_]*\).*/\1/p' | head -n 1)
+[ -n "$var" ] || exit 4
+[ -w "$e" ] || { echo "cannot write $e"; exit 3; }
+grep -qxF "$var=$old" "$e" || { echo "$var in $e is not set to $old"; exit 4; }
+bak="$e.quietkeep-$(date +%Y%m%d-%H%M%S).bak"
+cp -p "$e" "$bak" && awk -v k="$var" -v o="$old" -v n="$new" '$0 == k "=" o { print k "=" n; next } { print }' "$bak" > "$e" && echo "$bak""#;
+
+/// For images whose tag comes from a variable, such as `image: app:${APP_VERSION:-latest}`,
+/// backs up the `.env` file next to the compose file and changes `APP_VERSION=<old>` to
+/// `<new>`. Prints the backup path. Exits 4 when the image does not use a variable.
+pub fn set_env_tag_command(file: &str, repository: &str, old_tag: &str, new_tag: &str) -> Command {
+    Command::new("sh").args(["-c", SET_ENV_TAG, "sh", file, repository, old_tag, new_tag])
+}
+
+pub(crate) const MOVE_TO_COMPOSE: &str = r#"c=$1; restart=$2; d="$HOME/$c"; f="$d/compose.yaml"; old="$c-quietkeep-old"
+[ -e "$f" ] && { echo "$f already exists"; exit 5; }
+mkdir -p "$d" && (umask 077 && cat > "$f") || { echo "cannot write $f"; exit 6; }
+docker compose -f "$f" config -q || { rm -f "$f"; echo "the generated compose file was rejected by docker compose"; exit 7; }
+docker compose -f "$f" pull || { rm -f "$f"; echo "pulling the image failed"; exit 8; }
+docker stop "$c" >/dev/null && docker rename "$c" "$old" && docker update --restart=no "$old" >/dev/null || { echo "could not stop $c"; exit 9; }
+if docker compose -f "$f" up -d; then echo "$f"; echo "$old"; exit 0; fi
+docker rm -f "$c" >/dev/null 2>&1; docker rename "$old" "$c"; docker update --restart="$restart" "$c" >/dev/null 2>&1; docker start "$c" >/dev/null
+echo "starting the compose project failed, so the original container was started again"; exit 10"#;
+
+/// Writes the compose file read from stdin to `~/<container>/compose.yaml`, pulls, stops the
+/// container, renames it to `<container>-quietkeep-old` and starts the compose project. If the
+/// project does not start, the original container is renamed back and started again.
+pub fn move_to_compose_command(container: &str, restart_policy: &str) -> Command {
+    Command::new("sh").args(["-c", MOVE_TO_COMPOSE, "sh", container, restart_policy])
+}
+
+pub async fn inspect(conn: &Connection, container: &str) -> Result<Option<(serde_json::Value, serde_json::Value)>> {
+    let c = conn.run(&Command::new("docker").args(["inspect", container])).await?;
+    let Some(c) = c.success().then(|| serde_json::from_slice::<serde_json::Value>(&c.stdout).ok()).flatten() else {
+        return Ok(None);
+    };
+    let c = c.get(0).cloned().unwrap_or_default();
+    let image_id = c["Image"].as_str().unwrap_or_default().to_string();
+    let i = conn.run(&Command::new("docker").args(["image", "inspect", &image_id])).await?;
+    let i = i
+        .success()
+        .then(|| serde_json::from_slice::<serde_json::Value>(&i.stdout).ok())
+        .flatten()
+        .and_then(|v| v.get(0).cloned())
+        .unwrap_or_default();
+    Ok(Some((c, i)))
+}
+
+/// A compose file that recreates a `docker run` container, plus a copy with environment values
+/// masked for display and the settings QuietKeep could not carry over.
+#[derive(Debug, Clone, Serialize)]
+pub struct ComposePlan {
+    pub yaml: String,
+    pub masked: String,
+    pub unsupported: Vec<String>,
+    pub restart: String,
+}
+
+fn yq(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "$$"))
+}
+
+fn strs(v: &serde_json::Value) -> Vec<String> {
+    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()
+}
+
+pub fn compose_from_inspect(c: &serde_json::Value, image: &serde_json::Value) -> ComposePlan {
+    let hc = &c["HostConfig"];
+    let cfg = &c["Config"];
+    let icfg = &image["Config"];
+    let name = c["Name"].as_str().unwrap_or_default().trim_start_matches('/').to_string();
+    let mut unsupported = Vec::new();
+    if hc["Privileged"].as_bool() == Some(true) {
+        unsupported.push("privileged mode".to_string());
+    }
+    for (key, label) in [("CapAdd", "added capabilities"), ("Devices", "devices"), ("DeviceRequests", "GPU or device requests"), ("SecurityOpt", "security options"), ("Links", "container links"), ("Tmpfs", "tmpfs mounts"), ("Dns", "custom DNS servers")] {
+        if hc[key].as_array().is_some_and(|a| !a.is_empty()) || hc[key].as_object().is_some_and(|o| !o.is_empty()) {
+            unsupported.push(label.to_string());
+        }
+    }
+    if hc["Sysctls"].as_object().is_some_and(|o| !o.is_empty()) {
+        unsupported.push("sysctls".to_string());
+    }
+    let network = hc["NetworkMode"].as_str().unwrap_or("default").to_string();
+    if !["default", "bridge", "host"].contains(&network.as_str()) {
+        unsupported.push(format!("the {network} network"));
+    }
+    let restart = hc["RestartPolicy"]["Name"].as_str().filter(|r| !r.is_empty()).unwrap_or("no").to_string();
+    let base_env: Vec<String> = strs(&icfg["Env"]);
+    let env: Vec<String> = strs(&cfg["Env"]).into_iter().filter(|e| !base_env.contains(e)).collect();
+    let mut out = vec!["services:".to_string(), format!("  {name}:")];
+    out.push(format!("    image: {}", yq(cfg["Image"].as_str().unwrap_or_default())));
+    out.push(format!("    container_name: {}", yq(&name)));
+    out.push(format!("    restart: {}", yq(&restart)));
+    if network == "host" {
+        out.push("    network_mode: host".into());
+    }
+    let mut ports = Vec::new();
+    if let Some(map) = hc["PortBindings"].as_object() {
+        for (container_port, binds) in map {
+            for b in binds.as_array().cloned().unwrap_or_default() {
+                let ip = b["HostIp"].as_str().unwrap_or_default();
+                let hp = b["HostPort"].as_str().unwrap_or_default();
+                ports.push(if ip.is_empty() { format!("{hp}:{container_port}") } else { format!("{ip}:{hp}:{container_port}") });
+            }
+        }
+    }
+    if !ports.is_empty() && network != "host" {
+        out.push("    ports:".into());
+        out.extend(ports.iter().map(|p| format!("      - {}", yq(p))));
+    }
+    let mut named = Vec::new();
+    let mut vols = Vec::new();
+    for m in c["Mounts"].as_array().cloned().unwrap_or_default() {
+        let dest = m["Destination"].as_str().unwrap_or_default();
+        let ro = if m["RW"].as_bool() == Some(false) { ":ro" } else { "" };
+        match m["Type"].as_str() {
+            Some("volume") => {
+                let n = m["Name"].as_str().unwrap_or_default().to_string();
+                vols.push(format!("{n}:{dest}{ro}"));
+                named.push(n);
+            }
+            Some("bind") => vols.push(format!("{}:{dest}{ro}", m["Source"].as_str().unwrap_or_default())),
+            Some(other) => unsupported.push(format!("{other} mounts")),
+            None => {}
+        }
+    }
+    if !vols.is_empty() {
+        out.push("    volumes:".into());
+        out.extend(vols.iter().map(|v| format!("      - {}", yq(v))));
+    }
+    let hosts = strs(&hc["ExtraHosts"]);
+    if !hosts.is_empty() {
+        out.push("    extra_hosts:".into());
+        out.extend(hosts.iter().map(|h| format!("      - {}", yq(h))));
+    }
+    let list = |v: &[String]| format!("[{}]", v.iter().map(|x| yq(x)).collect::<Vec<_>>().join(", "));
+    let cmd = strs(&cfg["Cmd"]);
+    if !cmd.is_empty() && cmd != strs(&icfg["Cmd"]) {
+        out.push(format!("    command: {}", list(&cmd)));
+    }
+    let ep = strs(&cfg["Entrypoint"]);
+    if !ep.is_empty() && ep != strs(&icfg["Entrypoint"]) {
+        out.push(format!("    entrypoint: {}", list(&ep)));
+    }
+    if let Some(u) = cfg["User"].as_str().filter(|u| !u.is_empty() && Some(*u) != icfg["User"].as_str()) {
+        out.push(format!("    user: {}", yq(u)));
+    }
+    let head = out.join("\n");
+    let tail = {
+        let mut t = Vec::new();
+        if !named.is_empty() {
+            t.push("volumes:".to_string());
+            for n in &named {
+                t.push(format!("  {n}:"));
+                t.push("    external: true".into());
+            }
+        }
+        t.join("\n")
+    };
+    let env_block = |mask: bool| {
+        if env.is_empty() {
+            return String::new();
+        }
+        let mut b = vec!["\n    environment:".to_string()];
+        for e in &env {
+            let (k, v) = e.split_once('=').unwrap_or((e, ""));
+            b.push(format!("      {k}: {}", if mask { "\"********\"".to_string() } else { yq(v) }));
+        }
+        b.join("\n")
+    };
+    let build = |mask: bool| format!("{head}{}\n{tail}\n", env_block(mask));
+    ComposePlan { yaml: build(false), masked: build(true), unsupported, restart }
+}
+
 pub fn compose_update_commands(config_file: &str) -> Vec<Command> {
     vec![
         Command::new("docker").args(["compose", "-f", config_file, "pull"]),
@@ -240,5 +416,37 @@ mod set_image_tests {
         assert!(text.contains("image: nginx:1.26.0-alpine"));
         assert_eq!(run(&f, "nginx:9.9", "nginx:10").status.code(), Some(4));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod compose_tests {
+    use super::compose_from_inspect;
+
+    #[test]
+    fn builds_compose_from_docker_run() {
+        let c = serde_json::json!({
+            "Name": "/open-webui",
+            "Config": {"Image": "ghcr.io/open-webui/open-webui:v0.12.3", "Env": ["PATH=/usr/bin", "PORT=8080", "SECRET=a$b"], "Cmd": ["bash", "start.sh"]},
+            "HostConfig": {"NetworkMode": "host", "RestartPolicy": {"Name": "always"}, "ExtraHosts": ["host.docker.internal:127.0.0.1"], "PortBindings": {}},
+            "Mounts": [{"Type": "volume", "Name": "open-webui", "Destination": "/app/backend/data", "RW": true}]
+        });
+        let i = serde_json::json!({"Config": {"Env": ["PATH=/usr/bin"], "Cmd": ["bash", "start.sh"]}});
+        let p = compose_from_inspect(&c, &i);
+        assert!(p.unsupported.is_empty());
+        assert!(p.yaml.contains("    network_mode: host\n"));
+        assert!(p.yaml.contains("      - \"open-webui:/app/backend/data\"\n"));
+        assert!(p.yaml.contains("      SECRET: \"a$$b\""));
+        assert!(!p.masked.contains("a$$b"));
+        assert!(p.yaml.contains("volumes:\n  open-webui:\n    external: true"));
+        assert!(!p.yaml.contains("command:"));
+        assert_eq!(p.restart, "always");
+    }
+
+    #[test]
+    fn flags_unsupported_settings() {
+        let c = serde_json::json!({"Name": "/x", "Config": {"Image": "x"}, "HostConfig": {"Privileged": true, "Devices": [{"PathOnHost": "/dev/dri"}], "NetworkMode": "mynet"}, "Mounts": []});
+        let p = compose_from_inspect(&c, &serde_json::json!({}));
+        assert_eq!(p.unsupported.len(), 3);
     }
 }
