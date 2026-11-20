@@ -317,3 +317,91 @@ pub fn set_scan_interval(state: State<'_, AppState>, minutes: u32) -> CmdResult<
     s.log_activity("settings.scan_interval", None, &msg).map_err(err)?;
     Ok(minutes)
 }
+
+fn parse_action(action: &str) -> CmdResult<qk_collect::Action> {
+    match action {
+        "patch" => Ok(qk_collect::Action::Patch),
+        "reboot" => Ok(qk_collect::Action::Reboot),
+        _ => Err("Unknown action.".into()),
+    }
+}
+
+async fn connect_trusted(app: &AppHandle, h: &Host) -> CmdResult<qk_ssh::Connection> {
+    let Some(fp) = h.host_key.clone() else {
+        return Err("Verify this host's key first.".into());
+    };
+    let identity = app.state::<AppState>().identity.clone();
+    qk_ssh::connect(&target(h), identity, TrustPolicy::Pinned(fp), SSH_TIMEOUT).await.map_err(|e| match e {
+        SshError::AuthFailed(user) => format!("Login as {user} was refused. Install QuietKeep's access key."),
+        other => other.to_string(),
+    })
+}
+
+#[derive(Serialize)]
+pub struct PrivilegeCheck {
+    allowed: bool,
+    commands: Vec<String>,
+    rule: String,
+    sudoers_path: &'static str,
+}
+
+/// Shows the user exactly which root commands an action runs and whether the host's sudoers allows them.
+#[tauri::command]
+pub async fn check_privileged(app: AppHandle, id: i64, action: String) -> CmdResult<PrivilegeCheck> {
+    let action = parse_action(&action)?;
+    let h = host(&app.state::<AppState>(), id)?;
+    let os = h.spec.os_type;
+    let conn = connect_trusted(&app, &h).await?;
+    let allowed = qk_collect::sudo_allowed(&conn, os, action).await.map_err(err);
+    let _ = conn.close().await;
+    Ok(PrivilegeCheck {
+        allowed: allowed?,
+        commands: qk_collect::privileged_commands(os, action)
+            .into_iter()
+            .map(|argv| format!("sudo {}", qk_collect::display_command(argv)))
+            .collect(),
+        rule: qk_collect::sudoers_rule(&h.spec.username, os),
+        sudoers_path: qk_collect::SUDOERS_PATH,
+    })
+}
+
+/// Runs a confirmed patch or reboot. The UI calls this only after the user approves the listed commands.
+#[tauri::command]
+pub async fn run_action(app: AppHandle, id: i64, action: String) -> CmdResult<String> {
+    let action = parse_action(&action)?;
+    let h = host(&app.state::<AppState>(), id)?;
+    let name = h.spec.name.clone();
+    let conn = connect_trusted(&app, &h).await?;
+    let result = qk_collect::run_action(&conn, h.spec.os_type, action).await;
+    let _ = conn.close().await;
+    let state = app.state::<AppState>();
+    match (action, result) {
+        (qk_collect::Action::Reboot, _) => {
+            store(&state).log_activity("host.reboot", Some(id), &format!("Reboot requested for {name}")).map_err(err)?;
+            Ok(format!("Reboot requested for {name}."))
+        }
+        (qk_collect::Action::Patch, Ok(report)) if report.success => {
+            store(&state).log_activity("patch.completed", Some(id), &format!("Applied updates on {name}")).map_err(err)?;
+            let _ = scan_one(&app, h).await;
+            update_tray(&app);
+            Ok(format!("Applied updates on {name}."))
+        }
+        (qk_collect::Action::Patch, Ok(report)) => {
+            let last = report.output_tail.lines().last().unwrap_or("").to_string();
+            store(&state)
+                .log_activity("patch.failed", Some(id), &format!("Updates failed on {name}: {last}"))
+                .map_err(err)?;
+            Err(format!("Updates failed on {name}: {last}"))
+        }
+        (qk_collect::Action::Patch, Err(e)) => {
+            store(&state)
+                .log_activity("patch.failed", Some(id), &format!("Updates failed on {name}: {e}"))
+                .map_err(err)?;
+            Err(e.to_string())
+        }
+    }
+}
+
+fn update_tray(app: &AppHandle) {
+    crate::scheduler::update_tray_tooltip(app);
+}

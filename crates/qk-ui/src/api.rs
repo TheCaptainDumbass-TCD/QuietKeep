@@ -169,3 +169,25 @@ pub async fn set_scan_interval(minutes: u32) -> Result<u32, String> {
     }
     invoke("set_scan_interval", args(&A { minutes })).await
 }
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct PrivilegeCheck {
+    pub allowed: bool,
+    pub commands: Vec<String>,
+    pub rule: String,
+    pub sudoers_path: String,
+}
+
+#[derive(Serialize)]
+struct ActionArg {
+    id: i64,
+    action: &'static str,
+}
+
+pub async fn check_privileged(id: i64, action: &'static str) -> Result<PrivilegeCheck, String> {
+    invoke("check_privileged", args(&ActionArg { id, action })).await
+}
+
+pub async fn run_action(id: i64, action: &'static str) -> Result<String, String> {
+    invoke("run_action", args(&ActionArg { id, action })).await
+}

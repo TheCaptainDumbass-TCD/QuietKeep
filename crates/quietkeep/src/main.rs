@@ -112,6 +112,8 @@ fn main() {
             commands::scan_all,
             commands::get_scan_interval,
             commands::set_scan_interval,
+            commands::check_privileged,
+            commands::run_action,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start QuietKeep");

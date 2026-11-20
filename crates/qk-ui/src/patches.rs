@@ -1,7 +1,15 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::api::{self, PackageUpdate, PatchStatus};
+use crate::api::{self, PackageUpdate, PatchStatus, PrivilegeCheck};
+
+#[derive(Clone)]
+struct ActionDialog {
+    id: i64,
+    name: String,
+    action: &'static str,
+    check: PrivilegeCheck,
+}
 
 fn ago(ts: Option<i64>) -> String {
     let Some(ts) = ts else { return "Never".into() };
@@ -21,6 +29,8 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
     let scanning = RwSignal::new(Vec::<i64>::new());
     let all_busy = RwSignal::new(false);
     let details = RwSignal::new(None::<(String, Vec<PackageUpdate>)>);
+    let dialog = RwSignal::new(None::<ActionDialog>);
+    let running = RwSignal::new(None::<i64>);
 
     let load = move || {
         spawn_local(async move {
@@ -69,6 +79,41 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
         })
     };
 
+    let open_action = move |id: i64, name: String, action: &'static str| {
+        running.set(Some(id));
+        spawn_local(async move {
+            match api::check_privileged(id, action).await {
+                Ok(check) => dialog.set(Some(ActionDialog { id, name, action, check })),
+                Err(e) => notice.set(Some(format!("{name}: {e}"))),
+            }
+            running.set(None);
+        })
+    };
+    let recheck = move |_| {
+        let Some(d) = dialog.get_untracked() else { return };
+        dialog.set(None);
+        open_action(d.id, d.name, d.action);
+    };
+    let confirm_action = move |_| {
+        let Some(d) = dialog.get_untracked() else { return };
+        dialog.set(None);
+        running.set(Some(d.id));
+        notice.set(Some(if d.action == "patch" {
+            format!("Applying updates on {}...", d.name)
+        } else {
+            format!("Rebooting {}...", d.name)
+        }));
+        spawn_local(async move {
+            match api::run_action(d.id, d.action).await {
+                Ok(msg) => notice.set(Some(msg)),
+                Err(e) => notice.set(Some(e)),
+            }
+            running.set(None);
+            load();
+            refresh.run(());
+        })
+    };
+
     let total = move |f: fn(&PatchStatus) -> u32| rows.with(|r| r.iter().map(f).sum::<u32>());
 
     view! {
@@ -107,6 +152,8 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                     {
                         let id = r.host_id;
                         let (name_scan, name_show) = (r.name.clone(), r.name.clone());
+                        let (name_patch, name_reboot) = (r.name.clone(), r.name.clone());
+                        let reboot_required = r.reboot_required;
                         let pending = r.pending;
                         let trusted = r.host_key_trusted;
                         let status = if !trusted {
@@ -141,6 +188,12 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                                     <button class="btn small primary"
                                         disabled=move || !trusted || all_busy.get() || scanning.with(|s| s.contains(&id))
                                         on:click=move |_| scan_one(id, name_scan.clone())>"Scan"</button>
+                                    <button class="btn small"
+                                        disabled=move || !trusted || pending == 0 || running.get().is_some()
+                                        on:click=move |_| open_action(id, name_patch.clone(), "patch")>"Patch"</button>
+                                    <button class=if reboot_required { "btn small danger" } else { "btn small" }
+                                        disabled=move || !trusted || running.get().is_some()
+                                        on:click=move |_| open_action(id, name_reboot.clone(), "reboot")>"Reboot"</button>
                                 </td>
                             </tr>
                         }
@@ -148,6 +201,40 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                 </For>
             </tbody>
         </table>
+
+        <Show when=move || dialog.with(|d| d.is_some())>
+            <div class="modal-backdrop">
+                <div class="modal wide">
+                    {move || dialog.get().map(|d| {
+                        let verb = if d.action == "patch" { "Apply updates on" } else { "Reboot" };
+                        if d.check.allowed {
+                            view! {
+                                <h2>{format!("{verb} {}?", d.name)}</h2>
+                                <p>"QuietKeep will run exactly these commands as root:"</p>
+                                {d.check.commands.iter().map(|c| view! { <p class="fingerprint mono">{c.clone()}</p> }).collect_view()}
+                                <div class="modal-actions">
+                                    <button class="btn" on:click=move |_| dialog.set(None)>"Cancel"</button>
+                                    <button class="btn danger" on:click=confirm_action>{verb}</button>
+                                </div>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <h2>{format!("Allow QuietKeep on {}", d.name)}</h2>
+                                <p>{format!(
+                                    "{} does not allow QuietKeep to run these commands yet. On the host, run sudo visudo -f {} and paste this rule. It allows only these exact commands.",
+                                    d.name, d.check.sudoers_path
+                                )}</p>
+                                <textarea class="keybox mono" readonly rows="8">{d.check.rule.clone()}</textarea>
+                                <div class="modal-actions">
+                                    <button class="btn" on:click=move |_| dialog.set(None)>"Close"</button>
+                                    <button class="btn primary" on:click=recheck>"Check again"</button>
+                                </div>
+                            }.into_any()
+                        }
+                    })}
+                </div>
+            </div>
+        </Show>
 
         <Show when=move || details.with(|d| d.is_some())>
             <div class="modal-backdrop">
