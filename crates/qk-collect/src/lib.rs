@@ -2,7 +2,7 @@
 //! rebooting run only the exact commands listed in the host's QuietKeep sudoers rule.
 
 use qk_core::host::OsType;
-use qk_core::updates::{parse_apt_upgradable, parse_pacman_updates, PackageUpdate};
+use qk_core::updates::{parse_apt_held, parse_apt_upgradable, parse_pacman_updates, PackageUpdate};
 use qk_ssh::{quote, Command, Connection, Result};
 use serde::Serialize;
 
@@ -55,6 +55,16 @@ pub async fn scan(conn: &Connection, os: OsType) -> Result<ScanResult> {
         },
         _ => parse_apt_upgradable(&text),
     };
+    let mut updates = updates;
+    if matches!(os, OsType::Apt | OsType::Kali) && !updates.is_empty() {
+        let sim = conn.run(&Command::new("env").args(["LC_ALL=C", "apt-get", "-s", "upgrade"])).await?;
+        if sim.success() {
+            let held = parse_apt_held(&String::from_utf8_lossy(&sim.stdout));
+            for u in &mut updates {
+                u.held = held.get(&u.name).map(|r| r.to_string());
+            }
+        }
+    }
     let reboot_required = conn.run(&reboot_check_command(os)).await?.success();
     Ok(ScanResult { updates, reboot_required })
 }

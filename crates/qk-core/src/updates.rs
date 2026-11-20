@@ -10,6 +10,8 @@ pub struct PackageUpdate {
     /// Repository or pocket the update comes from, when the package manager reports it.
     pub source: Option<String>,
     pub security: bool,
+    /// Set when `apt-get upgrade` will skip this update: "phasing" or "kept back".
+    pub held: Option<String>,
 }
 
 /// Parses `apt list --upgradable`, e.g.
@@ -36,6 +38,7 @@ pub fn parse_apt_upgradable(output: &str) -> Vec<PackageUpdate> {
                 available_version: available.to_string(),
                 source: Some(source.to_string()),
                 security: source.split(',').any(|s| s.ends_with("-security")),
+                held: None,
             })
         })
         .collect()
@@ -59,6 +62,7 @@ pub fn parse_pacman_updates(output: &str) -> Vec<PackageUpdate> {
                 available_version: new.to_string(),
                 source: None,
                 security: false,
+                held: None,
             })
         })
         .collect()
@@ -95,5 +99,42 @@ mod tests {
         assert_eq!(u[0].available_version, "6.9.2.arch1-1");
         assert_eq!(u[1].current_version, None);
         assert_eq!(u[1].available_version, "127.0-1");
+    }
+}
+
+/// Parses `LC_ALL=C apt-get -s upgrade` and returns the packages apt will skip, with the reason.
+pub fn parse_apt_held(simulation: &str) -> std::collections::HashMap<String, &'static str> {
+    let mut held = std::collections::HashMap::new();
+    let mut reason = None;
+    for line in simulation.lines() {
+        if line.starts_with("The following upgrades have been deferred due to phasing") {
+            reason = Some("phasing");
+        } else if line.starts_with("The following packages have been kept back") {
+            reason = Some("kept back");
+        } else if line.starts_with("  ") {
+            if let Some(r) = reason {
+                for name in line.split_whitespace() {
+                    held.insert(name.to_string(), r);
+                }
+            }
+        } else {
+            reason = None;
+        }
+    }
+    held
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::parse_apt_held;
+
+    #[test]
+    fn parses_phasing_and_kept_back() {
+        let sim = "Reading package lists...\nThe following upgrades have been deferred due to phasing:\n  fwupd libfwupd3\n  kwin-common\nThe following packages have been kept back:\n  linux-generic\n0 upgraded, 0 newly installed, 0 to remove and 4 not upgraded.\n";
+        let h = parse_apt_held(sim);
+        assert_eq!(h.len(), 4);
+        assert_eq!(h["fwupd"], "phasing");
+        assert_eq!(h["kwin-common"], "phasing");
+        assert_eq!(h["linux-generic"], "kept back");
     }
 }

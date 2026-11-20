@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0003_docker.sql"),
     include_str!("migrations/0004_metrics.sql"),
     include_str!("migrations/0005_access.sql"),
+    include_str!("migrations/0006_held.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -55,6 +56,8 @@ pub struct PatchStatus {
     pub security: u32,
     pub reboot_required: bool,
     pub scan_error: Option<String>,
+    /// Updates apt upgrade skips (phased or kept back); not counted in `pending`.
+    pub held: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -186,11 +189,11 @@ impl Store {
         {
             let mut ins = tx.prepare(
                 "INSERT OR REPLACE INTO pending_updates
-                 (host_id, name, current_version, available_version, source, security)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 (host_id, name, current_version, available_version, source, security, held)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             for u in updates {
-                ins.execute(params![id, u.name, u.current_version, u.available_version, u.source, u.security])?;
+                ins.execute(params![id, u.name, u.current_version, u.available_version, u.source, u.security, u.held])?;
             }
         }
         tx.execute(
@@ -212,8 +215,8 @@ impl Store {
 
     pub fn pending_updates(&self, id: i64) -> Result<Vec<PackageUpdate>> {
         let mut stmt = self.conn.prepare(
-            "SELECT name, current_version, available_version, source, security
-             FROM pending_updates WHERE host_id = ?1 ORDER BY security DESC, name",
+            "SELECT name, current_version, available_version, source, security, held
+             FROM pending_updates WHERE host_id = ?1 ORDER BY held IS NOT NULL, security DESC, name",
         )?;
         let rows = stmt.query_map([id], |r| {
             Ok(PackageUpdate {
@@ -222,6 +225,7 @@ impl Store {
                 available_version: r.get(2)?,
                 source: r.get(3)?,
                 security: r.get(4)?,
+                held: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -230,7 +234,8 @@ impl Store {
     pub fn patch_status(&self) -> Result<Vec<PatchStatus>> {
         let mut stmt = self.conn.prepare(
             "SELECT h.id, h.name, h.os_type, h.is_patch_target, h.host_key IS NOT NULL, h.last_scan_at,
-                    COUNT(u.name), COALESCE(SUM(u.security), 0), h.reboot_required, h.scan_error
+                    COUNT(u.name) - COUNT(u.held), COALESCE(SUM(u.security AND u.held IS NULL), 0), h.reboot_required, h.scan_error,
+                    COUNT(u.held)
              FROM hosts h LEFT JOIN pending_updates u ON u.host_id = h.id
              GROUP BY h.id ORDER BY h.name",
         )?;
@@ -249,6 +254,7 @@ impl Store {
                 security: r.get(7)?,
                 reboot_required: r.get(8)?,
                 scan_error: r.get(9)?,
+                held: r.get(10)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -601,6 +607,7 @@ mod tests {
             available_version: "2".into(),
             source: Some("noble".into()),
             security: sec,
+            held: None,
         };
         store.record_scan(id, &[up("curl", false), up("openssl", true)], true).unwrap();
         let s = &store.patch_status().unwrap()[0];

@@ -126,6 +126,8 @@ pub struct PatchStatus {
     pub security: u32,
     pub reboot_required: bool,
     pub scan_error: Option<String>,
+    #[serde(default)]
+    pub held: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -135,6 +137,8 @@ pub struct PackageUpdate {
     pub available_version: String,
     pub source: Option<String>,
     pub security: bool,
+    #[serde(default)]
+    pub held: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

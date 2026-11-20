@@ -2,6 +2,10 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.6.0
+
+- APT and Kali scans detect updates that `apt upgrade` holds back, either phased by Ubuntu or kept back for new dependencies. They show as "+N held" next to the pending count, are labelled in Details with an explanation, and no longer count as patchable, so Patch is not offered for updates it cannot install
+
 ## 0.5.1
 
 - Patches panel: Patch is amber when updates are pending and Reboot is amber when a reboot is needed. Both are disabled when there is nothing to do, and disabled buttons are clearly greyed out with a tooltip

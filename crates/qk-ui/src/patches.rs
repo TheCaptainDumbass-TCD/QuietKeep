@@ -146,7 +146,7 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
             <tbody>
                 <For
                     each=move || rows.get()
-                    key=|r| (r.host_id, r.last_scan_at, r.pending, r.security, r.reboot_required, r.scan_error.clone(), r.host_key_trusted)
+                    key=|r| (r.host_id, r.last_scan_at, r.pending, r.held, r.security, r.reboot_required, r.scan_error.clone(), r.host_key_trusted)
                     let:r
                 >
                     {
@@ -155,6 +155,7 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                         let (name_patch, name_reboot) = (r.name.clone(), r.name.clone());
                         let reboot_required = r.reboot_required;
                         let pending = r.pending;
+                        let held = r.held;
                         let trusted = r.host_key_trusted;
                         let status = if !trusted {
                             view! { <span class="muted">"Verify key in Hosts"</span> }.into_any()
@@ -169,7 +170,11 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                             <tr>
                                 <td>{r.name.clone()}</td>
                                 <td>{r.os_type.clone()}</td>
-                                <td>{r.pending}</td>
+                                <td>{r.pending}{(held > 0).then(|| view! {
+                                    <span class="pill held" title="apt upgrade skips these on purpose: Ubuntu is phasing them in gradually, or they need new packages. They install on their own later. See Details.">
+                                        {format!("+{held} held")}
+                                    </span>
+                                })}</td>
                                 <td>{if r.security > 0 {
                                     view! { <span class="pill warn">{r.security}</span> }.into_any()
                                 } else {
@@ -183,8 +188,8 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                                 <td class="muted">{ago(r.last_scan_at)}</td>
                                 <td>{status}</td>
                                 <td class="actions">
-                                    <button class="btn small" disabled=pending == 0
-                                        title={if pending == 0 { "No pending updates" } else { "Show pending packages" }}
+                                    <button class="btn small" disabled=pending == 0 && held == 0
+                                        title={if pending == 0 && held == 0 { "No pending updates" } else { "Show pending packages" }}
                                         on:click=move |_| show(id, name_show.clone())>"Details"</button>
                                     <button class="btn small primary"
                                         disabled=move || !trusted || all_busy.get() || scanning.with(|s| s.contains(&id))
@@ -244,6 +249,9 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                 <div class="modal wide">
                     {move || details.get().map(|(name, ups)| view! {
                         <h2>{format!("Pending updates on {name}")}</h2>
+                        {ups.iter().any(|u| u.held.is_some()).then(|| view! {
+                            <p class="muted">"Held back updates are skipped by apt upgrade on purpose, so patching does not install them. Phased updates are being rolled out by Ubuntu to a few machines at a time and install on their own in a few days. Kept back packages need new dependencies, usually a new kernel, and install with a full upgrade."</p>
+                        })}
                         <div class="scroll">
                             <table class="table">
                                 <thead>
@@ -256,7 +264,12 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                                             <td class="mono">{u.current_version.unwrap_or_default()}</td>
                                             <td class="mono">{u.available_version}</td>
                                             <td>{u.source.unwrap_or_default()}</td>
-                                            <td>{u.security.then(|| view! { <span class="pill warn">"Security"</span> })}</td>
+                                            <td>
+                                                {u.security.then(|| view! { <span class="pill warn">"Security"</span> })}
+                                                {u.held.clone().map(|h| view! {
+                                                    <span class="pill held">{if h == "phasing" { "Held: phased rollout" } else { "Held: kept back" }}</span>
+                                                })}
+                                            </td>
                                         </tr>
                                     }).collect_view()}
                                 </tbody>
