@@ -119,6 +119,10 @@ fn main() {
             commands::scan_docker_all,
             commands::compose_update_preview,
             commands::update_compose,
+            commands::kev_state,
+            commands::kev_set_allowed,
+            commands::kev_refresh,
+            commands::kev_search,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start QuietKeep");

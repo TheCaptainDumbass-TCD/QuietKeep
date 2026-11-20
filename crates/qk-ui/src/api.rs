@@ -239,3 +239,66 @@ pub async fn compose_update_preview(id: i64, project: String) -> Result<Vec<Stri
 pub async fn update_compose(id: i64, project: String) -> Result<String, String> {
     invoke("update_compose", args(&ProjectArg { id, project })).await
 }
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct KevSummary {
+    pub catalog_version: String,
+    pub date_released: String,
+    pub total: usize,
+    pub ransomware: usize,
+    pub linux_related: usize,
+    pub added_last_30_days: usize,
+    pub top_vendors: Vec<(String, usize)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct KevState {
+    pub allowed: bool,
+    pub summary: Option<KevSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Vulnerability {
+    #[serde(rename = "cveID")]
+    pub cve_id: String,
+    pub vendor_project: String,
+    pub product: String,
+    pub vulnerability_name: String,
+    pub date_added: String,
+    pub short_description: String,
+    pub required_action: String,
+    pub due_date: String,
+    pub known_ransomware_campaign_use: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct KevFilter {
+    pub search: String,
+    pub linux_only: bool,
+    pub ransomware_only: bool,
+}
+
+pub async fn kev_state() -> Result<KevState, String> {
+    invoke("kev_state", JsValue::UNDEFINED).await
+}
+
+pub async fn kev_set_allowed(allowed: bool) -> Result<bool, String> {
+    #[derive(Serialize)]
+    struct A {
+        allowed: bool,
+    }
+    invoke("kev_set_allowed", args(&A { allowed })).await
+}
+
+pub async fn kev_refresh() -> Result<KevSummary, String> {
+    invoke("kev_refresh", JsValue::UNDEFINED).await
+}
+
+pub async fn kev_search(filter: KevFilter) -> Result<Vec<Vulnerability>, String> {
+    #[derive(Serialize)]
+    struct A {
+        filter: KevFilter,
+    }
+    invoke("kev_search", args(&A { filter })).await
+}

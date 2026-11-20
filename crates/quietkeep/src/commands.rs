@@ -531,3 +531,70 @@ pub async fn update_compose(app: AppHandle, id: i64, project: String) -> CmdResu
     let _ = docker_one(&app, h).await;
     outcome
 }
+
+const KEV_ALLOWED_KEY: &str = "kev.allowed";
+
+fn kev_cache(app: &AppHandle) -> CmdResult<std::path::PathBuf> {
+    Ok(app.path().app_data_dir().map_err(err)?.join("cisa_kev.json"))
+}
+
+fn kev_allowed(state: &State<'_, AppState>) -> bool {
+    store(state).get_setting(KEV_ALLOWED_KEY).ok().flatten().as_deref() == Some("1")
+}
+
+#[derive(Serialize)]
+pub struct KevState {
+    allowed: bool,
+    summary: Option<qk_intel::Summary>,
+}
+
+#[tauri::command]
+pub fn kev_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<KevState> {
+    let summary = qk_intel::load_cache(&kev_cache(&app)?)
+        .map_err(err)?
+        .map(|c| qk_intel::summarize(&c, &qk_intel::today_utc()));
+    Ok(KevState { allowed: kev_allowed(&state), summary })
+}
+
+/// Records the user's choice about downloading the CISA KEV feed from cisa.gov.
+#[tauri::command]
+pub fn kev_set_allowed(state: State<'_, AppState>, allowed: bool) -> CmdResult<bool> {
+    let s = store(&state);
+    s.set_setting(KEV_ALLOWED_KEY, if allowed { "1" } else { "0" }).map_err(err)?;
+    let msg = if allowed { "Allowed CISA KEV downloads from cisa.gov" } else { "Turned off CISA KEV downloads" };
+    s.log_activity("settings.kev", None, msg).map_err(err)?;
+    Ok(allowed)
+}
+
+#[tauri::command]
+pub async fn kev_refresh(app: AppHandle) -> CmdResult<qk_intel::Summary> {
+    if !kev_allowed(&app.state::<AppState>()) {
+        return Err("Allow CISA KEV downloads first.".into());
+    }
+    let path = kev_cache(&app)?;
+    let catalog = tauri::async_runtime::spawn_blocking(move || {
+        let bytes = qk_intel::download()?;
+        qk_intel::save_cache(&path, &bytes)?;
+        qk_intel::parse(&bytes)
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
+    let summary = qk_intel::summarize(&catalog, &qk_intel::today_utc());
+    store(&app.state::<AppState>())
+        .log_activity(
+            "kev.refresh",
+            None,
+            &format!("Downloaded CISA KEV {} ({} entries)", summary.catalog_version, summary.total),
+        )
+        .map_err(err)?;
+    Ok(summary)
+}
+
+#[tauri::command]
+pub fn kev_search(app: AppHandle, filter: qk_intel::Filter) -> CmdResult<Vec<qk_intel::Vulnerability>> {
+    Ok(qk_intel::load_cache(&kev_cache(&app)?)
+        .map_err(err)?
+        .map(|c| qk_intel::filter(&c, &filter, 200))
+        .unwrap_or_default())
+}
