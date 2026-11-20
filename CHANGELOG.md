@@ -2,6 +2,13 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.12.0
+
+- Security: Check fixed versions looks up the Debian and Ubuntu security tracker records for the catalog CVEs at api.osv.dev, after asking permission. Only public CVE IDs are sent
+- Affecting your hosts now lists a Debian or Ubuntu host only when its installed version is older than the fixed version, or when no fix is released yet. Each CVE shows the installed version, the fixed version and whether the update is ready to install
+- Hosts without tracker data, such as Kali, Arch, Proxmox kernels and container images, are hidden by default and shown as not version checked
+- Patch scans now record source packages and the OS release so versions can be compared
+
 ## 0.11.0
 
 - Security: Affecting your hosts lists known exploited vulnerabilities for software installed on the hosts saved in QuietKeep, grouped by product. Click a product to see its CVEs and click a CVE for details

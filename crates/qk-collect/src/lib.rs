@@ -10,8 +10,20 @@ use serde::Serialize;
 pub struct ScanResult {
     pub updates: Vec<PackageUpdate>,
     pub reboot_required: bool,
-    /// Installed packages as (name, version). Empty when the inventory could not be read.
-    pub packages: Vec<(String, String)>,
+    /// Installed packages. Empty when the inventory could not be read.
+    pub packages: Vec<qk_core::updates::InstalledPackage>,
+    /// `ID` and `VERSION_ID` from /etc/os-release, such as `debian` and `13`.
+    pub os_release: Option<(String, String)>,
+}
+
+const OS_RELEASE: &str = r#". /etc/os-release 2>/dev/null; echo "$ID $VERSION_ID""#;
+
+fn parse_os_release(text: &str) -> Option<(String, String)> {
+    let mut it = text.split_whitespace();
+    let id = it.next()?;
+    let version = it.next().unwrap_or("");
+    let ok = |s: &str| !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    (ok(id) && (version.is_empty() || ok(version))).then(|| (id.to_lowercase(), version.to_string()))
 }
 
 pub fn packages_command(os: OsType) -> Command {
@@ -20,29 +32,34 @@ pub fn packages_command(os: OsType) -> Command {
             "LC_ALL=C",
             "dpkg-query",
             "-W",
-            "-f=${db:Status-Abbrev}\t${Package}\t${Version}\n",
+            "-f=${db:Status-Abbrev}\t${Package}\t${Version}\t${source:Package}\t${source:Version}\n",
         ]),
         OsType::Pacman => Command::new("pacman").arg("-Q"),
     }
 }
 
-pub fn parse_packages(os: OsType, text: &str) -> Vec<(String, String)> {
+pub fn parse_packages(os: OsType, text: &str) -> Vec<qk_core::updates::InstalledPackage> {
+    use qk_core::updates::InstalledPackage;
     text.lines()
         .filter_map(|l| match os {
             OsType::Pacman => {
                 let mut it = l.split_whitespace();
-                Some((it.next()?.to_string(), it.next()?.to_string()))
+                let (name, version) = (it.next()?.to_string(), it.next()?.to_string());
+                Some(InstalledPackage { source: name.clone(), source_version: version.clone(), name, version })
             }
             _ => {
                 let mut it = l.split('\t');
-                let status = it.next()?;
-                if !status.starts_with("ii") {
+                if !it.next()?.starts_with("ii") {
                     return None;
                 }
-                Some((it.next()?.trim().to_string(), it.next()?.trim().to_string()))
+                let name = it.next()?.trim().to_string();
+                let version = it.next()?.trim().to_string();
+                let source = it.next().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&name).to_string();
+                let source_version = it.next().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&version).to_string();
+                Some(InstalledPackage { name, version, source, source_version })
             }
         })
-        .filter(|(n, v)| !n.is_empty() && !v.is_empty())
+        .filter(|p| !p.name.is_empty() && !p.version.is_empty())
         .collect()
 }
 
@@ -106,7 +123,9 @@ pub async fn scan(conn: &Connection, os: OsType) -> Result<ScanResult> {
     } else {
         Vec::new()
     };
-    Ok(ScanResult { updates, reboot_required, packages })
+    let os = conn.run(&Command::new("sh").args(["-c", OS_RELEASE])).await?;
+    let os_release = parse_os_release(&String::from_utf8_lossy(&os.stdout));
+    Ok(ScanResult { updates, reboot_required, packages, os_release })
 }
 
 pub const SUDOERS_PATH: &str = "/etc/sudoers.d/quietkeep";
@@ -269,11 +288,14 @@ mod package_tests {
 
     #[test]
     fn installed_packages_are_parsed() {
-        let apt = "ii \tsudo\t1.9.16p2-3\nrc \told-pkg\t1.0\nii \topenssh-server\t1:10.0p1-7\n";
-        assert_eq!(
-            parse_packages(OsType::Apt, apt),
-            vec![("sudo".into(), "1.9.16p2-3".into()), ("openssh-server".into(), "1:10.0p1-7".into())]
-        );
+        let apt = "ii \tsudo\t1.9.16p2-3\tsudo\t1.9.16p2-3\nrc \told-pkg\t1.0\t\t\nii \tlinux-image-6.8.0-1060-aws\t6.8.0-1060.63\tlinux-signed-aws-6.8\t6.8.0-1060.63\nii \tbare\t2.0\n";
+        let p = parse_packages(OsType::Apt, apt);
+        assert_eq!(p.len(), 3);
+        assert_eq!(p[1].source, "linux-signed-aws-6.8");
+        assert_eq!((p[2].source.as_str(), p[2].source_version.as_str()), ("bare", "2.0"));
+        assert_eq!(parse_os_release("ubuntu 22.04\n"), Some(("ubuntu".into(), "22.04".into())));
+        assert_eq!(parse_os_release("arch\n"), Some(("arch".into(), String::new())));
+        assert_eq!(parse_os_release("x;rm 1\n"), None);
         assert_eq!(parse_packages(OsType::Pacman, "sudo 1.9.16-1\nbash 5.2\n").len(), 2);
     }
 }

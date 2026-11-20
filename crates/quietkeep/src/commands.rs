@@ -241,6 +241,9 @@ async fn scan_one(app: &AppHandle, h: Host) -> CmdResult<()> {
             let mut s = store(&state);
             s.record_scan(h.id, &r.updates, r.reboot_required).map_err(err)?;
             s.record_packages(h.id, &r.packages).map_err(err)?;
+            if let Some((os_id, os_version)) = &r.os_release {
+                s.record_os_release(h.id, os_id, os_version).map_err(err)?;
+            }
             let reboot = if r.reboot_required { ", reboot required" } else { "" };
             s.log_activity(
                 "scan.completed",
@@ -743,7 +746,21 @@ pub fn kev_affected(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec
         return Ok(Vec::new());
     };
     let s = store(&state);
-    let packages = s.all_packages().map_err(err)?;
+    let packages: Vec<qk_intel::affected::HostPkg> = s
+        .all_packages()
+        .map_err(err)?
+        .into_iter()
+        .map(|p| qk_intel::affected::HostPkg {
+            host_id: p.host_id,
+            host: p.host,
+            os_id: p.os_id,
+            os_version: p.os_version,
+            name: p.package.name,
+            version: p.package.version,
+            source: p.package.source,
+            source_version: p.package.source_version,
+        })
+        .collect();
     let images: Vec<(i64, String, String)> = s
         .docker_status()
         .map_err(err)?
@@ -754,7 +771,71 @@ pub fn kev_affected(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec
         })
         .collect();
     let pending = s.pending_packages().map_err(err)?;
-    Ok(qk_intel::affected::affected(&catalog, &packages, &images, &pending))
+    let osv = qk_intel::osv::load_cache(&osv_cache(&app)?).map_err(err)?;
+    Ok(qk_intel::affected::affected(&catalog, &packages, &images, &pending, osv.as_ref()))
+}
+
+const OSV_ALLOWED_KEY: &str = "osv.allowed";
+
+fn osv_cache(app: &AppHandle) -> CmdResult<std::path::PathBuf> {
+    Ok(app.path().app_data_dir().map_err(err)?.join("osv_fixed_versions.json"))
+}
+
+fn osv_allowed(state: &State<'_, AppState>) -> bool {
+    store(state).get_setting(OSV_ALLOWED_KEY).ok().flatten().as_deref() == Some("1")
+}
+
+#[derive(Serialize)]
+pub struct OsvState {
+    allowed: bool,
+    fetched_at: Option<String>,
+    checked: usize,
+}
+
+#[tauri::command]
+pub fn osv_state(app: AppHandle, state: State<'_, AppState>) -> CmdResult<OsvState> {
+    let cache = qk_intel::osv::load_cache(&osv_cache(&app)?).map_err(err)?;
+    Ok(OsvState {
+        allowed: osv_allowed(&state),
+        fetched_at: cache.as_ref().map(|c| c.fetched_at.clone()),
+        checked: cache.map(|c| c.cves.len()).unwrap_or(0),
+    })
+}
+
+/// Records the user's choice about looking up fixed versions at api.osv.dev.
+#[tauri::command]
+pub fn osv_set_allowed(state: State<'_, AppState>, allowed: bool) -> CmdResult<bool> {
+    let s = store(&state);
+    s.set_setting(OSV_ALLOWED_KEY, if allowed { "1" } else { "0" }).map_err(err)?;
+    let msg = if allowed { "Allowed fixed version lookups at api.osv.dev" } else { "Turned off fixed version lookups" };
+    s.log_activity("settings.osv", None, msg).map_err(err)?;
+    Ok(allowed)
+}
+
+/// Looks up the Debian and Ubuntu fixed versions for the catalog CVEs QuietKeep can match.
+/// Sends only public CVE IDs.
+#[tauri::command]
+pub async fn osv_refresh(app: AppHandle) -> CmdResult<usize> {
+    if !osv_allowed(&app.state::<AppState>()) {
+        return Err("Allow fixed version lookups first.".into());
+    }
+    let Some(catalog) = qk_intel::load_cache(&kev_cache(&app)?).map_err(err)? else {
+        return Err("Download the CISA KEV catalog first.".into());
+    };
+    let path = osv_cache(&app)?;
+    let cves = qk_intel::affected::trackable_cves(&catalog);
+    let count = tauri::async_runtime::spawn_blocking(move || {
+        let cache = qk_intel::osv::fetch(&cves, &qk_intel::today_utc())?;
+        qk_intel::osv::save_cache(&path, &cache)?;
+        Ok::<_, qk_intel::IntelError>(cache.cves.len())
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
+    store(&app.state::<AppState>())
+        .log_activity("osv.refresh", None, &format!("Looked up fixed versions for {count} CVEs at api.osv.dev"))
+        .map_err(err)?;
+    Ok(count)
 }
 
 fn record_telemetry(app: &AppHandle, id: i64, t: &qk_collect::telemetry::Telemetry) {

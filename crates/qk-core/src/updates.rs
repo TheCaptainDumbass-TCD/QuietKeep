@@ -138,3 +138,12 @@ mod held_tests {
         assert_eq!(h["linux-generic"], "kept back");
     }
 }
+
+/// A package installed on a host and the source package it was built from.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InstalledPackage {
+    pub name: String,
+    pub version: String,
+    pub source: String,
+    pub source_version: String,
+}

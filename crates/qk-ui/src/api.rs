@@ -326,6 +326,33 @@ pub struct HostMatch {
     pub version: String,
     #[serde(default)]
     pub update_pending: bool,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub fixed_version: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct OsvState {
+    pub allowed: bool,
+    pub fetched_at: Option<String>,
+    pub checked: usize,
+}
+
+pub async fn osv_state() -> Result<OsvState, String> {
+    invoke("osv_state", JsValue::UNDEFINED).await
+}
+
+pub async fn osv_set_allowed(allowed: bool) -> Result<bool, String> {
+    #[derive(Serialize)]
+    struct A {
+        allowed: bool,
+    }
+    invoke("osv_set_allowed", args(&A { allowed })).await
+}
+
+pub async fn osv_refresh() -> Result<usize, String> {
+    invoke("osv_refresh", JsValue::UNDEFINED).await
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

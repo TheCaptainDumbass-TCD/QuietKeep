@@ -15,7 +15,10 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
     let asking = RwSignal::new(false);
     let selected = RwSignal::new(None::<Vulnerability>);
     let affected = RwSignal::new(Vec::<api::Affected>::new());
-    let pending_only = RwSignal::new(true);
+    let show_unchecked = RwSignal::new(false);
+    let osv = RwSignal::new(None::<api::OsvState>);
+    let osv_asking = RwSignal::new(false);
+    let osv_busy = RwSignal::new(false);
     let expanded = RwSignal::new(None::<String>);
     let show_cve = move |cve: String| {
         let filter = KevFilter { search: cve.clone(), linux_only: false, ransomware_only: false };
@@ -46,6 +49,9 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                 Ok(s) => {
                     state.set(Some(s));
                     run_search();
+                    if let Ok(o) = api::osv_state().await {
+                        osv.set(Some(o));
+                    }
                     match api::kev_affected().await {
                         Ok(a) => affected.set(a),
                         Err(e) => notice.set(Some(e)),
@@ -57,6 +63,34 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
     };
     load();
 
+    let osv_download = move || {
+        osv_busy.set(true);
+        notice.set(Some("Looking up fixed versions in the Debian and Ubuntu security trackers...".into()));
+        spawn_local(async move {
+            match api::osv_refresh().await {
+                Ok(n) => notice.set(Some(format!("Checked fixed versions for {n} CVEs."))),
+                Err(e) => notice.set(Some(e)),
+            }
+            osv_busy.set(false);
+            load();
+        })
+    };
+    let osv_click = move |_| {
+        if osv.with(|o| o.as_ref().is_some_and(|o| o.allowed)) {
+            osv_download();
+        } else {
+            osv_asking.set(true);
+        }
+    };
+    let osv_allow = move |_| {
+        osv_asking.set(false);
+        spawn_local(async move {
+            match api::osv_set_allowed(true).await {
+                Ok(_) => osv_download(),
+                Err(e) => notice.set(Some(e)),
+            }
+        })
+    };
     let download = move || {
         busy.set(true);
         notice.set(Some("Downloading the CISA KEV catalog...".into()));
@@ -122,29 +156,49 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
         </div>
         <section class="card">
             <h2>"Affecting your hosts"</h2>
-            <p class="muted">"Known exploited vulnerabilities in software installed on the hosts saved in QuietKeep, from the package lists and container images of their last scan. "
-               "The catalog does not list affected versions, so a match means the product is installed. Install pending security updates on those hosts and check each CVE's details."</p>
+            <p class="muted">"Known exploited vulnerabilities in software installed on the hosts saved in QuietKeep, from the package lists and container images of their last patch scan. "
+               "With fixed versions checked, Debian and Ubuntu hosts are listed only when their installed version is older than the fix."</p>
             <div class="toolbar">
-                <label title="Hosts where an update for the product is waiting are the ones to patch first">
-                    <input type="checkbox" prop:checked=move || pending_only.get()
-                        on:change=move |ev| pending_only.set(event_target_checked(&ev)) />
-                    " Only hosts with a pending update for the product"</label>
-                <span class="muted">{move || {
-                    let all = affected.with(|a| a.len());
-                    let pend = affected.with(|a| a.iter().filter(|x| x.hosts.iter().any(|h| h.update_pending)).count());
-                    format!("{pend} of {all} matches have a pending update")
-                }}</span>
+                <button class="btn" on:click=osv_click
+                    disabled=move || osv_busy.get() || !state.with(|s| s.as_ref().is_some_and(|s| s.summary.is_some()))
+                    title=move || if state.with(|s| s.as_ref().is_some_and(|s| s.summary.is_some())) { "Look up which package version fixes each CVE" } else { "Download the catalog first" }>
+                    {move || if osv.with(|o| o.as_ref().is_some_and(|o| o.fetched_at.is_some())) { "Update fixed versions" } else { "Check fixed versions" }}
+                </button>
+                <span class="muted">{move || osv.with(|o| match o.as_ref().and_then(|o| o.fetched_at.clone().map(|f| (f, o.checked))) {
+                    Some((f, n)) => format!("Fixed versions for {n} CVEs checked {f}"),
+                    None => "Fixed versions not checked yet, so every match is shown.".to_string(),
+                })}</span>
+                <span class="spacer"></span>
+                <label title="Hosts QuietKeep cannot version check, such as Kali, Arch, Proxmox kernels and container images">
+                    <input type="checkbox" prop:checked=move || show_unchecked.get()
+                        on:change=move |ev| show_unchecked.set(event_target_checked(&ev)) />
+                    " Show matches without version data"</label>
             </div>
+            <Show when=move || osv_asking.get()>
+                <div class="modal-backdrop">
+                    <div class="modal">
+                        <h2>"Check fixed versions"</h2>
+                        <p>"QuietKeep will ask api.osv.dev, the public OSV database, for the Debian and Ubuntu security tracker records of the catalog CVEs it can match. "
+                           "Only public CVE IDs are sent. Nothing about your hosts or packages leaves this computer."</p>
+                        <p class="muted">"The comparison with your installed versions happens locally. You can turn this off later in the same place."</p>
+                        <div class="modal-actions">
+                            <button class="btn" on:click=move |_| osv_asking.set(false)>"Cancel"</button>
+                            <button class="btn primary" on:click=osv_allow>"Allow and check"</button>
+                        </div>
+                    </div>
+                </div>
+            </Show>
             {move || {
                 let has_catalog = state.with(|s| s.as_ref().is_some_and(|s| s.summary.is_some()));
-                let only = pending_only.get();
+                let checked = osv.with(|o| o.as_ref().is_some_and(|o| o.fetched_at.is_some()));
+                let unchecked_too = show_unchecked.get() || !checked;
                 let all_empty = affected.with(|a| a.is_empty());
                 let list: Vec<api::Affected> = affected
                     .get()
                     .into_iter()
                     .filter_map(|mut a| {
-                        if only {
-                            a.hosts.retain(|h| h.update_pending);
+                        if !unchecked_too {
+                            a.hosts.retain(|h| h.status != "unchecked");
                         }
                         (!a.hosts.is_empty()).then_some(a)
                     })
@@ -152,9 +206,9 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                 if !has_catalog {
                     view! { <p class="muted">"Download the catalog to check your hosts."</p> }.into_any()
                 } else if list.is_empty() && !all_empty {
-                    view! { <p class="muted">"No matched host has a pending update for these products. Clear the checkbox to see every match."</p> }.into_any()
+                    view! { <p class="ok-text">"No saved host has a version older than the fix for any matched known exploited vulnerability."</p> }.into_any()
                 } else if list.is_empty() {
-                    view! { <p class="muted">"No matches. Hosts are checked after a patch scan collects their installed packages, so scan any host that is new or not scanned since 0.11.0."</p> }.into_any()
+                    view! { <p class="muted">"No matches. Hosts are checked after a patch scan collects their installed packages, so scan any host that is new or not scanned since 0.12.0."</p> }.into_any()
                 } else {
                     let mut groups: Vec<(String, Vec<api::Affected>)> = Vec::new();
                     for a in list {
@@ -166,7 +220,7 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                     }
                     view! {
                         <table class="table">
-                            <thead><tr><th>"Product"</th><th>"Known exploited"</th><th>"Hosts"</th><th>"Updates"</th><th>"Ransomware"</th></tr></thead>
+                            <thead><tr><th>"Product"</th><th>"CVEs"</th><th>"Hosts"</th><th>"Status"</th><th>"Ransomware"</th></tr></thead>
                             <tbody>
                                 {groups.into_iter().map(|(key, cves)| {
                                     let mut hosts: Vec<api::HostMatch> = Vec::new();
@@ -177,7 +231,13 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                                     }
                                     let names = hosts.iter().map(|h| h.host.clone()).collect::<Vec<_>>().join(", ");
                                     let detail = hosts.iter().map(|h| format!("{}: {} {}", h.host, h.source, h.version)).collect::<Vec<_>>().join("\n");
-                                    let pending = hosts.iter().filter(|h| h.update_pending).count();
+                                    let host_status = |st: &str| {
+                                        let mut ids: Vec<i64> = cves.iter().flat_map(|a| a.hosts.iter()).filter(|h| h.status == st).map(|h| h.host_id).collect();
+                                        ids.sort_unstable();
+                                        ids.dedup();
+                                        ids.len()
+                                    };
+                                    let (patch, nofix, unchecked) = (host_status("patch"), host_status("nofix"), host_status("unchecked"));
                                     let ransomware = cves.iter().filter(|a| a.known_ransomware).count();
                                     let count = cves.len();
                                     let k1 = key.clone();
@@ -187,11 +247,11 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                                             <td>{let k3 = key.clone(); move || if expanded.with(|e| e.as_deref() == Some(k3.as_str())) { "\u{25BE} " } else { "\u{25B8} " }}{key.clone()}</td>
                                             <td>{count}</td>
                                             <td title=detail>{names}</td>
-                                            <td>{if pending > 0 {
-                                                view! { <span class="pill warn" title="Install updates on these hosts from the Patches page">{format!("Pending on {pending}")}</span> }.into_any()
-                                            } else {
-                                                view! { <span class="muted">"None pending"</span> }.into_any()
-                                            }}</td>
+                                            <td>
+                                                {(patch > 0).then(|| view! { <span class="pill warn" title="The installed version is older than the fixed version. Patch these hosts.">{format!("Patch {patch} hosts")}</span> })}
+                                                {(nofix > 0).then(|| view! { <span class="pill bad" title="The tracker lists the package as affected and no fix is released yet">{format!("No fix yet on {nofix}")}</span> })}
+                                                {(unchecked > 0).then(|| view! { <span class="pill held" title="No tracker data for these hosts, so only the product is known to be installed">{format!("Not version checked on {unchecked}")}</span> })}
+                                            </td>
                                             <td>{if ransomware > 0 {
                                                 view! { <span class="pill bad">{format!("{ransomware} known")}</span> }.into_any()
                                             } else {
@@ -201,10 +261,15 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                                         <Show when=move || expanded.with(|e| e.as_deref() == Some(k2.as_str()))>
                                             {cves.clone().into_iter().map(|a| {
                                                 let cve = a.cve_id.clone();
+                                                let per_host = a.hosts.iter().map(|h| match (h.status.as_str(), &h.fixed_version) {
+                                                    ("patch", Some(f)) => format!("{}: {} {}, fixed in {f}{}", h.host, h.source, h.version, if h.update_pending { ", update ready" } else { "" }),
+                                                    ("nofix", _) => format!("{}: {} {}, no fix yet", h.host, h.source, h.version),
+                                                    _ => format!("{}: {} {}, not version checked", h.host, h.source, h.version),
+                                                }).collect::<Vec<_>>().join("; ");
                                                 view! {
                                                     <tr class="clickable sub" title="Click for details" on:click=move |_| show_cve(cve.clone())>
                                                         <td class="mono">{a.cve_id.clone()}</td>
-                                                        <td colspan="3">{a.vulnerability_name.clone()}</td>
+                                                        <td colspan="3">{a.vulnerability_name.clone()}<br/><span class="muted">{per_host}</span></td>
                                                         <td class="muted">{a.date_added.clone()}</td>
                                                     </tr>
                                                 }

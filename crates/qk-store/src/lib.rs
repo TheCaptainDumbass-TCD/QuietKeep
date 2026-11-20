@@ -21,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0010_finished.sql"),
     include_str!("migrations/0011_snooze.sql"),
     include_str!("migrations/0012_packages.sql"),
+    include_str!("migrations/0013_sources.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -90,6 +91,16 @@ pub struct ContainerRow {
     pub stopped_days: Option<i64>,
     /// The user hid the notice for this major release.
     pub snoozed: bool,
+}
+
+/// One installed package on a saved host, with the host's OS release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostPackage {
+    pub host_id: i64,
+    pub host: String,
+    pub os_id: Option<String>,
+    pub os_version: Option<String>,
+    pub package: qk_core::updates::InstalledPackage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -227,16 +238,18 @@ impl Store {
     /// Records a failed scan without discarding the last known pending updates.
     /// Replaces the installed package list for a host. An empty list keeps the old one,
     /// so a failed inventory never clears known packages.
-    pub fn record_packages(&mut self, id: i64, packages: &[(String, String)]) -> Result<()> {
+    pub fn record_packages(&mut self, id: i64, packages: &[qk_core::updates::InstalledPackage]) -> Result<()> {
         if packages.is_empty() {
             return Ok(());
         }
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM host_packages WHERE host_id = ?1", [id])?;
         {
-            let mut ins = tx.prepare("INSERT OR REPLACE INTO host_packages (host_id, name, version) VALUES (?1, ?2, ?3)")?;
-            for (name, version) in packages {
-                ins.execute(rusqlite::params![id, name, version])?;
+            let mut ins = tx.prepare(
+                "INSERT OR REPLACE INTO host_packages (host_id, name, version, source_name, source_version) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for p in packages {
+                ins.execute(rusqlite::params![id, p.name, p.version, p.source, p.source_version])?;
             }
         }
         tx.commit()?;
@@ -250,12 +263,34 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    /// Installed packages of every host, as (host id, host name, package, version).
-    pub fn all_packages(&self) -> Result<Vec<(i64, String, String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT h.id, h.name, p.name, p.version FROM host_packages p JOIN hosts h ON h.id = p.host_id ORDER BY h.name, p.name",
+    pub fn record_os_release(&mut self, id: i64, os_id: &str, os_version: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE hosts SET os_id = ?2, os_version = ?3 WHERE id = ?1",
+            rusqlite::params![id, os_id, os_version],
         )?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        Ok(())
+    }
+
+    /// Installed packages of every saved host.
+    pub fn all_packages(&self) -> Result<Vec<HostPackage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT h.id, h.name, h.os_id, h.os_version, p.name, p.version, COALESCE(p.source_name, p.name), COALESCE(p.source_version, p.version)
+             FROM host_packages p JOIN hosts h ON h.id = p.host_id ORDER BY h.name, p.name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(HostPackage {
+                host_id: r.get(0)?,
+                host: r.get(1)?,
+                os_id: r.get(2)?,
+                os_version: r.get(3)?,
+                package: qk_core::updates::InstalledPackage {
+                    name: r.get(4)?,
+                    version: r.get(5)?,
+                    source: r.get(6)?,
+                    source_version: r.get(7)?,
+                },
+            })
+        })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
