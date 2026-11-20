@@ -4,31 +4,36 @@ Standalone desktop app for Debian 13 and Ubuntu that keeps a small to medium hom
 
 ## Status
 
-Early development. The first release is agentless and uses SSH. An optional agent is planned.
+Early development (0.6.x). QuietKeep is agentless and uses SSH. An optional host agent is planned. Version 1.0.0 will be the first public release.
 
 ## Features
 
 - Host list with CSV import and export in the original QuietKeep format
 - SSH host key pinning with explicit approval and an app owned ed25519 key
+- One click Set up access for a single host or all hosts, using your own SSH key through ssh-agent
 - Read only patch scans for apt, Kali, Proxmox and pacman hosts
+- Held back apt updates (phased by Ubuntu or kept back) shown apart from installable ones
+- Host telemetry charts for load, memory, root disk and uptime
 - Confirmed patching and rebooting through an exact command sudoers rule
 - Docker inventory with registry digest checks and confirmed compose updates
 - CISA KEV catalog with offline search, downloaded only after you allow it
 - Scheduled background scans from the tray, off by default
+- Panels you can hide and reorder
 - System, light and dark themes
 
 ## Security model
 
 - QuietKeep opens no listening port. It only connects out to hosts you add.
 - It never trusts a host key on its own. You approve each fingerprint, and a changed key blocks the connection.
-- It uses its own SSH key, never your personal keys. You add its public key to each host yourself.
-- Scans never use sudo. Patching and rebooting run only the commands listed in `/etc/sudoers.d/quietkeep`, which you install on each host. QuietKeep never asks for or stores sudo passwords.
+- It uses its own SSH key for all normal work. Set up access logs in once with your own key through ssh-agent and installs QuietKeep's key. Your private keys never leave the agent.
+- QuietKeep's private key is encrypted, and its passphrase is kept in the desktop keyring (GNOME Keyring or KWallet).
+- Scans never use sudo. Patching and rebooting run only the commands listed in `/etc/sudoers.d/quietkeep`. Set up access can install that rule with a sudo password you type once. QuietKeep never stores passwords.
 - Every patch, reboot, container update and download asks for confirmation first.
 
 ## Install
 
 ```sh
-sudo apt install ./quietkeep_0.4.0_amd64.deb
+sudo apt install ./quietkeep_0.6.1_amd64.deb
 ```
 
 Tested on clean Debian 13 and Ubuntu 24.04 systems. Removing the package with `sudo apt remove quietkeep` leaves your data in place.
@@ -66,7 +71,7 @@ The package is written to `target/release/bundle/deb/`.
 | `qk-collect` | Package and Docker collectors, patch and reboot actions |
 | `qk-intel` | CISA KEV catalog |
 | `qk-jobs` | Job runner (planned) |
-| `qk-auth` | Local unlock and secret storage (planned) |
+| `qk-auth` | Desktop keyring storage for the SSH key passphrase |
 | `quietkeep` | Tauri 2 desktop shell, tray and scheduler |
 | `qk-ui` | Rust/WebAssembly user interface (Leptos) |
 
@@ -75,7 +80,7 @@ The package is written to `target/release/bundle/deb/`.
 Install the newer package the same way. apt sees that `quietkeep` is already installed and upgrades it in place, so there is no need to remove the old version first. Hosts, trusted keys and settings are kept.
 
 ```sh
-sudo apt install ./quietkeep_0.4.0_amd64.deb
+sudo apt install ./quietkeep_0.6.1_amd64.deb
 ```
 
 If QuietKeep is running in the tray during the upgrade, it shows a "QuietKeep was updated" banner. Click Restart to switch to the new version, or choose Quit from the tray menu and start it again.

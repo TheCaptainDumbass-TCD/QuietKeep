@@ -4,18 +4,18 @@ QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release buil
 
 ## 0.6.1
 
-- Docker: each host is its own bordered card with a coloured header, and columns line up across hosts
+- Docker: each host is its own bordered card with a colored header, and columns line up across hosts
 - Docker: images pinned to a digest show Pinned, and Unknown now explains why on hover (docker buildx missing, locally built image or registry unreachable)
-- Patches and Docker: the status line is a coloured banner with a spinner while work runs, then green, amber or red when it finishes
+- Patches and Docker: the status line is a colored banner with a spinner while work runs, then green, amber or red when it finishes
 
 ## 0.6.0
 
-- APT and Kali scans detect updates that `apt upgrade` holds back, either phased by Ubuntu or kept back for new dependencies. They show as "+N held" next to the pending count, are labelled in Details with an explanation, and no longer count as patchable, so Patch is not offered for updates it cannot install
+- APT and Kali scans detect updates that `apt upgrade` holds back, either phased by Ubuntu or kept back for new dependencies. They show as "+N held" next to the pending count, are labeled in Details with an explanation and no longer count as patchable, so Patch is not offered for updates it cannot install
 
 ## 0.5.1
 
-- Patches panel: Patch is amber when updates are pending and Reboot is amber when a reboot is needed. Both are disabled when there is nothing to do, and disabled buttons are clearly greyed out with a tooltip
-- Set up access explains a read-only disk in plain words, does not rewrite ~/.ssh permissions that are already correct, and clears an old error when you switch login method
+- Patches panel: Patch is amber when updates are pending and Reboot is amber when a reboot is needed. Both are disabled when there is nothing to do, and disabled buttons are clearly grayed out with a tooltip
+- Set up access explains a read-only disk in plain words, does not rewrite ~/.ssh permissions that are already correct and clears an old error when you switch login method
 
 ## 0.5.0
 
