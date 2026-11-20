@@ -1,9 +1,14 @@
+mod api;
+mod dashboard;
+mod hosts;
 mod tauri;
 mod theme;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use dashboard::Dashboard;
+use hosts::HostsPanel;
 use theme::{Theme, ThemeSwitcher};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,6 +56,20 @@ fn App() -> impl IntoView {
         }
     });
 
+    let hosts = RwSignal::new(Vec::new());
+    let activity = RwSignal::new(Vec::new());
+    let refresh = Callback::new(move |_| {
+        spawn_local(async move {
+            if let Ok(h) = api::list_hosts().await {
+                hosts.set(h);
+            }
+            if let Ok(a) = api::recent_activity().await {
+                activity.set(a);
+            }
+        })
+    });
+    refresh.run(());
+
     view! {
         <div class="shell">
             <aside class="sidebar">
@@ -78,9 +97,14 @@ fn App() -> impl IntoView {
             </aside>
             <main class="content">
                 <h1>{move || panel.get().label()}</h1>
-                <section class="card">
-                    <p class="muted">"No hosts yet. Add a host or import your existing list to get started."</p>
-                </section>
+                {move || match panel.get() {
+                    Panel::Dashboard => view! { <Dashboard hosts activity /> }.into_any(),
+                    Panel::Hosts => view! { <HostsPanel hosts refresh /> }.into_any(),
+                    _ => view! {
+                        <section class="card"><p class="muted">"This panel arrives in a later milestone."</p></section>
+                    }
+                    .into_any(),
+                }}
             </main>
         </div>
     }

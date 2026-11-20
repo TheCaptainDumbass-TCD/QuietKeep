@@ -1,25 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::Serialize;
+mod commands;
+
+use std::sync::Mutex;
+
+use commands::AppState;
+use qk_store::Store;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WindowEvent};
 
 const MAIN_WINDOW: &str = "main";
-
-#[derive(Serialize)]
-struct AppInfo {
-    name: &'static str,
-    version: &'static str,
-}
-
-#[tauri::command]
-fn app_info() -> AppInfo {
-    AppInfo {
-        name: "QuietKeep",
-        version: env!("CARGO_PKG_VERSION"),
-    }
-}
 
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
@@ -65,7 +56,17 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            let dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&dir)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+            }
+            let store = Store::open(&dir.join("quietkeep.db"))?;
+            app.manage(AppState { store: Mutex::new(store) });
             build_tray(app.handle())?;
             Ok(())
         })
@@ -77,7 +78,16 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![app_info])
+        .invoke_handler(tauri::generate_handler![
+            commands::app_info,
+            commands::list_hosts,
+            commands::add_host,
+            commands::delete_host,
+            commands::recent_activity,
+            commands::pick_import_csv,
+            commands::commit_import,
+            commands::export_hosts_csv,
+        ])
         .run(tauri::generate_context!())
         .expect("failed to start QuietKeep");
 }

@@ -27,14 +27,14 @@ pub enum CsvError {
     Csv(#[from] csv::Error),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RowError {
     /// 1-based line number in the file, counting the header as line 1.
     pub line: u64,
     pub message: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize)]
 pub struct ImportReport {
     pub hosts: Vec<HostSpec>,
     /// Names already present (either in `existing` or earlier in the same file).
