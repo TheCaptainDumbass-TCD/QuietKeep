@@ -220,6 +220,11 @@ async fn scan_one(app: &AppHandle, h: Host) -> CmdResult<()> {
     let result: qk_ssh::Result<qk_collect::ScanResult> = async {
         let conn = qk_ssh::connect(&target(&h), identity, TrustPolicy::Pinned(fp), SSH_TIMEOUT).await?;
         let scanned = qk_collect::scan(&conn, h.spec.os_type).await;
+        if scanned.is_ok() {
+            if let Ok(Some(t)) = qk_collect::telemetry::collect(&conn).await {
+                record_telemetry(app, h.id, &t);
+            }
+        }
         let _ = conn.close().await;
         scanned
     }
@@ -610,4 +615,31 @@ pub fn kev_search(app: AppHandle, filter: qk_intel::Filter) -> CmdResult<Vec<qk_
         .map_err(err)?
         .map(|c| qk_intel::filter(&c, &filter, 200))
         .unwrap_or_default())
+}
+
+fn record_telemetry(app: &AppHandle, id: i64, t: &qk_collect::telemetry::Telemetry) {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let sample = qk_store::MetricSample {
+        at,
+        load1: t.load1,
+        cpus: t.cpus,
+        mem_used_pct: t.mem_used_pct,
+        disk_used_pct: t.disk_used_pct,
+        uptime_s: t.uptime_s,
+    };
+    let _ = store(&app.state::<AppState>()).record_metrics(id, &sample, &t.kernel, &t.os_name);
+}
+
+/// Telemetry samples from the last `hours` hours (capped at the 7 day retention).
+#[tauri::command]
+pub fn metrics(state: State<'_, AppState>, hours: u32) -> CmdResult<Vec<qk_store::HostMetrics>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let window = (hours.min(168) as i64) * 3600;
+    store(&state).metrics_since(now - window).map_err(err)
 }

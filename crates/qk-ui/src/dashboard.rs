@@ -59,5 +59,6 @@ pub fn Dashboard(hosts: RwSignal<Vec<Host>>, activity: RwSignal<Vec<Activity>>) 
                 </Show>
             </section>
         </div>
+        <crate::telemetry::TelemetryCard />
     }
 }

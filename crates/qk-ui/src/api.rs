@@ -302,3 +302,30 @@ pub async fn kev_search(filter: KevFilter) -> Result<Vec<Vulnerability>, String>
     }
     invoke("kev_search", args(&A { filter })).await
 }
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct MetricSample {
+    pub at: i64,
+    pub load1: f64,
+    pub cpus: u32,
+    pub mem_used_pct: f64,
+    pub disk_used_pct: f64,
+    pub uptime_s: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct HostMetrics {
+    pub host_id: i64,
+    pub name: String,
+    pub kernel: Option<String>,
+    pub os_name: Option<String>,
+    pub samples: Vec<MetricSample>,
+}
+
+pub async fn metrics(hours: u32) -> Result<Vec<HostMetrics>, String> {
+    #[derive(Serialize)]
+    struct A {
+        hours: u32,
+    }
+    invoke("metrics", args(&A { hours })).await
+}

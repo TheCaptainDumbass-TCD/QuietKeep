@@ -2,6 +2,10 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## Unreleased
+
+- Host telemetry on the dashboard: load, memory, root disk and uptime with 24 hour and 7 day charts
+
 ## 0.2.0
 
 - Package renamed to `quietkeep`

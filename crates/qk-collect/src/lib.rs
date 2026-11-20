@@ -202,3 +202,4 @@ mod tests {
     }
 }
 pub mod docker;
+pub mod telemetry;

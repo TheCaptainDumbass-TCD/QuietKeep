@@ -12,6 +12,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_init.sql"),
     include_str!("migrations/0002_scans.sql"),
     include_str!("migrations/0003_docker.sql"),
+    include_str!("migrations/0004_metrics.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -74,6 +75,28 @@ pub struct DockerHost {
     pub docker_error: Option<String>,
     pub containers: Vec<ContainerRow>,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct MetricSample {
+    pub at: i64,
+    pub load1: f64,
+    pub cpus: u32,
+    pub mem_used_pct: f64,
+    pub disk_used_pct: f64,
+    pub uptime_s: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HostMetrics {
+    pub host_id: i64,
+    pub name: String,
+    pub kernel: Option<String>,
+    pub os_name: Option<String>,
+    pub samples: Vec<MetricSample>,
+}
+
+/// Samples older than this are pruned when new ones arrive.
+pub const METRICS_RETENTION_SECS: i64 = 7 * 24 * 3600;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Activity {
@@ -313,6 +336,59 @@ pub fn record_docker(&mut self, id: i64, containers: &[ContainerRow]) -> Result<
                 .collect::<std::result::Result<_, _>>()?;
         }
         Ok(hosts)
+    }
+
+pub fn record_metrics(&mut self, id: i64, m: &MetricSample, kernel: &str, os_name: &str) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO metrics (host_id, at, load1, cpus, mem_used_pct, disk_used_pct, uptime_s)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, m.at, m.load1, m.cpus, m.mem_used_pct, m.disk_used_pct, m.uptime_s],
+        )?;
+        tx.execute(
+            "DELETE FROM metrics WHERE host_id = ?1 AND at < ?2",
+            params![id, m.at - METRICS_RETENTION_SECS],
+        )?;
+        tx.execute(
+            "UPDATE hosts SET kernel = ?1, os_name = ?2 WHERE id = ?3",
+            params![kernel, os_name, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Hosts with at least one sample since `since`, oldest sample first.
+    pub fn metrics_since(&self, since: i64) -> Result<Vec<HostMetrics>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT h.id, h.name, h.kernel, h.os_name, m.at, m.load1, m.cpus, m.mem_used_pct, m.disk_used_pct, m.uptime_s
+             FROM metrics m JOIN hosts h ON h.id = m.host_id
+             WHERE m.at >= ?1 ORDER BY h.name, m.at",
+        )?;
+        let mut out: Vec<HostMetrics> = Vec::new();
+        let rows = stmt.query_map([since], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                MetricSample {
+                    at: r.get(4)?,
+                    load1: r.get(5)?,
+                    cpus: r.get(6)?,
+                    mem_used_pct: r.get(7)?,
+                    disk_used_pct: r.get(8)?,
+                    uptime_s: r.get(9)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (id, name, kernel, os_name, sample) = row?;
+            match out.last_mut() {
+                Some(h) if h.host_id == id => h.samples.push(sample),
+                _ => out.push(HostMetrics { host_id: id, name, kernel, os_name, samples: vec![sample] }),
+            }
+        }
+        Ok(out)
     }
 
     pub fn log_activity(&self, kind: &str, host_id: Option<i64>, message: &str) -> Result<()> {
@@ -574,5 +650,27 @@ mod tests {
         assert!(d.docker_scan_at.is_some());
         store.record_docker_error(id, "docker not found").unwrap();
         assert_eq!(store.docker_status().unwrap()[0].docker_error.as_deref(), Some("docker not found"));
+    }
+
+    #[test]
+    fn records_and_prunes_metrics() {
+        let mut store = Store::open_in_memory().unwrap();
+        let spec = HostSpec {
+            name: "m1".into(),
+            address: "198.51.100.8".into(),
+            username: "admin".into(),
+            os_type: OsType::Apt,
+            is_patch_target: true,
+            has_docker: false,
+        };
+        let id = store.add_host(&spec).unwrap();
+        let sample = |at| MetricSample { at, load1: 0.5, cpus: 4, mem_used_pct: 40.0, disk_used_pct: 60.0, uptime_s: 100 };
+        store.record_metrics(id, &sample(1_000), "6.1", "Debian").unwrap();
+        store.record_metrics(id, &sample(2_000), "6.1", "Debian").unwrap();
+        store.record_metrics(id, &sample(1_000 + METRICS_RETENTION_SECS + 1), "6.2", "Debian").unwrap();
+        let m = store.metrics_since(0).unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].samples.len(), 2);
+        assert_eq!(m[0].kernel.as_deref(), Some("6.2"));
     }
 }

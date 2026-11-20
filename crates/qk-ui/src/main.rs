@@ -5,6 +5,7 @@ mod docker;
 mod patches;
 mod security;
 mod settings;
+mod telemetry;
 mod tauri;
 mod theme;
 
