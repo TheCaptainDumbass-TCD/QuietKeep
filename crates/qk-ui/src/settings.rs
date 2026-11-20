@@ -62,6 +62,7 @@ pub fn SettingsPanel(refresh: Callback<()>) -> impl IntoView {
                 <span class="muted">{move || notice.get().unwrap_or_default()}</span>
             </div>
         </section>
+        <crate::layout::PanelLayoutCard />
         <section class="card">
             <h2>"About QuietKeep"</h2>
             {move || info.get().map(|i| view! {

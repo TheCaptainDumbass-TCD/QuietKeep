@@ -1,6 +1,7 @@
 mod api;
 mod dashboard;
 mod hosts;
+mod layout;
 mod docker;
 mod patches;
 mod security;
@@ -20,8 +21,8 @@ use security::SecurityPanel;
 use settings::SettingsPanel;
 use theme::{Theme, ThemeSwitcher};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Panel {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Panel {
     Dashboard,
     Hosts,
     Patches,
@@ -39,6 +40,17 @@ impl Panel {
         Panel::Security,
         Panel::Settings,
     ];
+
+    fn key(self) -> &'static str {
+        match self {
+            Panel::Dashboard => "dashboard",
+            Panel::Hosts => "hosts",
+            Panel::Patches => "patches",
+            Panel::Docker => "docker",
+            Panel::Security => "security",
+            Panel::Settings => "settings",
+        }
+    }
 
     fn label(self) -> &'static str {
         match self {
@@ -58,6 +70,15 @@ fn App() -> impl IntoView {
     Effect::new(move |_| theme.get().apply());
 
     let panel = RwSignal::new(Panel::Dashboard);
+    let panels = RwSignal::new(layout::load());
+    provide_context(panels);
+    Effect::new(move |_| {
+        let l = panels.get();
+        layout::save(&l);
+        if !l.iter().any(|e| e.visible && e.panel == panel.get_untracked()) {
+            panel.set(Panel::Dashboard);
+        }
+    });
     let version = RwSignal::new(String::new());
     spawn_local(async move {
         if let Ok(info) = tauri::app_info().await {
@@ -84,9 +105,12 @@ fn App() -> impl IntoView {
             <aside class="sidebar">
                 <div class="brand">"QuietKeep"</div>
                 <nav>
-                    {Panel::ALL
+                    {move || panels
+                        .get()
                         .into_iter()
-                        .map(|p| {
+                        .filter(|e| e.visible)
+                        .map(|e| {
+                            let p = e.panel;
                             view! {
                                 <button
                                     class="nav-item"

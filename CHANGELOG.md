@@ -2,6 +2,10 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## Unreleased
+
+- Panels section in Settings: show, hide and reorder sidebar panels
+
 ## 0.3.1
 
 - Licensed under GPL-3.0-or-later

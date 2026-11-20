@@ -201,3 +201,7 @@ p.small { font-size: 12px; margin: 4px 0 12px; }
 .steps li { margin: 4px 0; }
 label.check { display: flex; align-items: center; gap: 6px; margin: 10px 0; }
 .modal input.search { width: 100%; box-sizing: border-box; margin: 4px 0; }
+
+.table.panels { width: 100%; }
+.table.panels td { padding: 4px 8px; }
+.table.panels label.check { margin: 0; }
