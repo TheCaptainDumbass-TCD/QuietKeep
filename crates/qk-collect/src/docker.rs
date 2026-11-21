@@ -84,30 +84,57 @@ pub async fn inventory(conn: &Connection) -> Result<Vec<Container>> {
 
 async fn local_digests(conn: &Connection, image: &str) -> Result<Option<Vec<String>>> {
     let out = conn
-        .run(&Command::new("docker").args(["image", "inspect", image, "--format", "{{json .RepoDigests}}"]))
+        .run(&Command::new("docker").args([
+            "image",
+            "inspect",
+            image,
+            "--format",
+            "{{json .RepoDigests}}",
+        ]))
         .await?;
-    Ok(out.success().then(|| serde_json::from_slice(&out.stdout).ok()).flatten())
+    Ok(out
+        .success()
+        .then(|| serde_json::from_slice(&out.stdout).ok())
+        .flatten())
 }
 
 async fn remote_digest(conn: &Connection, image: &str) -> Result<Option<String>> {
     let out = conn
         .run(&Command::new("docker").args([
-            "buildx", "imagetools", "inspect", image, "--format", "{{json .Manifest.Digest}}",
+            "buildx",
+            "imagetools",
+            "inspect",
+            image,
+            "--format",
+            "{{json .Manifest.Digest}}",
         ]))
         .await?;
-    Ok(out.success().then(|| serde_json::from_slice::<String>(&out.stdout).ok()).flatten())
+    Ok(out
+        .success()
+        .then(|| serde_json::from_slice::<String>(&out.stdout).ok())
+        .flatten())
 }
 
 pub const NOTE_PINNED: &str =
     "Pinned to a fixed digest in its compose file, so it only changes when you edit that file.";
 pub const NOTE_NO_BUILDX: &str = "docker buildx is not installed on this host, so the registry cannot be checked. Install the docker-buildx package (docker-buildx-plugin on Docker's own repository).";
-pub const NOTE_NO_LOCAL: &str = "The local image has no registry digest. It was built locally or loaded from a file.";
-pub const NOTE_REGISTRY: &str = "The registry could not be checked. It may be offline, private or rate limiting requests.";
+pub const NOTE_NO_LOCAL: &str =
+    "The local image has no registry digest. It was built locally or loaded from a file.";
+pub const NOTE_REGISTRY: &str =
+    "The registry could not be checked. It may be offline, private or rate limiting requests.";
 
 /// The image reference the container was created from, which keeps an `@sha256:` pin that `docker ps` drops.
-async fn container_details(conn: &Connection, container: &str) -> Result<(Option<String>, Option<i64>)> {
+async fn container_details(
+    conn: &Connection,
+    container: &str,
+) -> Result<(Option<String>, Option<i64>)> {
     let out = conn
-        .run(&Command::new("docker").args(["inspect", container, "--format", "{{.Config.Image}}|{{.State.FinishedAt}}"]))
+        .run(&Command::new("docker").args([
+            "inspect",
+            container,
+            "--format",
+            "{{.Config.Image}}|{{.State.FinishedAt}}",
+        ]))
         .await?;
     if !out.success() {
         return Ok((None, None));
@@ -130,15 +157,30 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 /// `0001-01-01T00:00:00Z` for containers that never stopped, which maps to `None`.
 pub fn rfc3339_to_unix(s: &str) -> Option<i64> {
     let n = |a: usize, b: usize| s.get(a..b)?.parse::<i64>().ok();
-    let (y, mo, d, h, mi, se) = (n(0, 4)?, n(5, 7)?, n(8, 10)?, n(11, 13)?, n(14, 16)?, n(17, 19)?);
+    let (y, mo, d, h, mi, se) = (
+        n(0, 4)?,
+        n(5, 7)?,
+        n(8, 10)?,
+        n(11, 13)?,
+        n(14, 16)?,
+        n(17, 19)?,
+    );
     (y >= 1970).then(|| days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + se)
 }
 
 /// Records each container's configured image and local digests. With `host_registry` set it
 /// also asks the host's `docker buildx` for the registry digest, the fallback used when the
 /// user has not allowed QuietKeep to contact registries itself.
-pub async fn check_updates(conn: &Connection, containers: &mut [Container], host_registry: bool) -> Result<()> {
-    let buildx = host_registry && conn.run(&Command::new("docker").args(["buildx", "version"])).await?.success();
+pub async fn check_updates(
+    conn: &Connection,
+    containers: &mut [Container],
+    host_registry: bool,
+) -> Result<()> {
+    let buildx = host_registry
+        && conn
+            .run(&Command::new("docker").args(["buildx", "version"]))
+            .await?
+            .success();
     let mut locals: HashMap<String, Vec<String>> = HashMap::new();
     let mut remotes: HashMap<String, Option<String>> = HashMap::new();
     for c in containers.iter_mut() {
@@ -150,7 +192,10 @@ pub async fn check_updates(conn: &Connection, containers: &mut [Container], host
             locals.insert(c.image.clone(), l);
         }
         c.local_digests = locals[&c.image].clone();
-        let pinned = c.image.contains('@') || c.configured_image.as_deref().is_some_and(|i| i.contains("@sha256:"));
+        let pinned = c.image.contains('@')
+            || c.configured_image
+                .as_deref()
+                .is_some_and(|i| i.contains("@sha256:"));
         if pinned {
             c.update_available = None;
             c.update_note = Some(NOTE_PINNED.into());
@@ -168,7 +213,9 @@ pub async fn check_updates(conn: &Connection, containers: &mut [Container], host
             remotes.insert(c.image.clone(), r);
         }
         match (c.local_digests.is_empty(), &remotes[&c.image]) {
-            (false, Some(remote)) => c.update_available = Some(!c.local_digests.iter().any(|d| d.ends_with(remote))),
+            (false, Some(remote)) => {
+                c.update_available = Some(!c.local_digests.iter().any(|d| d.ends_with(remote)))
+            }
             (true, _) => c.update_note = Some(NOTE_NO_LOCAL.into()),
             (false, None) => c.update_note = Some(NOTE_REGISTRY.into()),
         }
@@ -230,14 +277,25 @@ pub fn move_to_compose_command(container: &str, restart_policy: &str) -> Command
     Command::new("sh").args(["-c", MOVE_TO_COMPOSE, "sh", container, restart_policy])
 }
 
-pub async fn inspect(conn: &Connection, container: &str) -> Result<Option<(serde_json::Value, serde_json::Value)>> {
-    let c = conn.run(&Command::new("docker").args(["inspect", container])).await?;
-    let Some(c) = c.success().then(|| serde_json::from_slice::<serde_json::Value>(&c.stdout).ok()).flatten() else {
+pub async fn inspect(
+    conn: &Connection,
+    container: &str,
+) -> Result<Option<(serde_json::Value, serde_json::Value)>> {
+    let c = conn
+        .run(&Command::new("docker").args(["inspect", container]))
+        .await?;
+    let Some(c) = c
+        .success()
+        .then(|| serde_json::from_slice::<serde_json::Value>(&c.stdout).ok())
+        .flatten()
+    else {
         return Ok(None);
     };
     let c = c.get(0).cloned().unwrap_or_default();
     let image_id = c["Image"].as_str().unwrap_or_default().to_string();
-    let i = conn.run(&Command::new("docker").args(["image", "inspect", &image_id])).await?;
+    let i = conn
+        .run(&Command::new("docker").args(["image", "inspect", &image_id]))
+        .await?;
     let i = i
         .success()
         .then(|| serde_json::from_slice::<serde_json::Value>(&i.stdout).ok())
@@ -258,24 +316,49 @@ pub struct ComposePlan {
 }
 
 fn yq(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "$$"))
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "$$")
+    )
 }
 
 fn strs(v: &serde_json::Value) -> Vec<String> {
-    v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn compose_from_inspect(c: &serde_json::Value, image: &serde_json::Value) -> ComposePlan {
     let hc = &c["HostConfig"];
     let cfg = &c["Config"];
     let icfg = &image["Config"];
-    let name = c["Name"].as_str().unwrap_or_default().trim_start_matches('/').to_string();
+    let name = c["Name"]
+        .as_str()
+        .unwrap_or_default()
+        .trim_start_matches('/')
+        .to_string();
     let mut unsupported = Vec::new();
     if hc["Privileged"].as_bool() == Some(true) {
         unsupported.push("privileged mode".to_string());
     }
-    for (key, label) in [("CapAdd", "added capabilities"), ("Devices", "devices"), ("DeviceRequests", "GPU or device requests"), ("SecurityOpt", "security options"), ("Links", "container links"), ("Tmpfs", "tmpfs mounts"), ("Dns", "custom DNS servers")] {
-        if hc[key].as_array().is_some_and(|a| !a.is_empty()) || hc[key].as_object().is_some_and(|o| !o.is_empty()) {
+    for (key, label) in [
+        ("CapAdd", "added capabilities"),
+        ("Devices", "devices"),
+        ("DeviceRequests", "GPU or device requests"),
+        ("SecurityOpt", "security options"),
+        ("Links", "container links"),
+        ("Tmpfs", "tmpfs mounts"),
+        ("Dns", "custom DNS servers"),
+    ] {
+        if hc[key].as_array().is_some_and(|a| !a.is_empty())
+            || hc[key].as_object().is_some_and(|o| !o.is_empty())
+        {
             unsupported.push(label.to_string());
         }
     }
@@ -286,11 +369,21 @@ pub fn compose_from_inspect(c: &serde_json::Value, image: &serde_json::Value) ->
     if !["default", "bridge", "host"].contains(&network.as_str()) {
         unsupported.push(format!("the {network} network"));
     }
-    let restart = hc["RestartPolicy"]["Name"].as_str().filter(|r| !r.is_empty()).unwrap_or("no").to_string();
+    let restart = hc["RestartPolicy"]["Name"]
+        .as_str()
+        .filter(|r| !r.is_empty())
+        .unwrap_or("no")
+        .to_string();
     let base_env: Vec<String> = strs(&icfg["Env"]);
-    let env: Vec<String> = strs(&cfg["Env"]).into_iter().filter(|e| !base_env.contains(e)).collect();
+    let env: Vec<String> = strs(&cfg["Env"])
+        .into_iter()
+        .filter(|e| !base_env.contains(e))
+        .collect();
     let mut out = vec!["services:".to_string(), format!("  {name}:")];
-    out.push(format!("    image: {}", yq(cfg["Image"].as_str().unwrap_or_default())));
+    out.push(format!(
+        "    image: {}",
+        yq(cfg["Image"].as_str().unwrap_or_default())
+    ));
     out.push(format!("    container_name: {}", yq(&name)));
     out.push(format!("    restart: {}", yq(&restart)));
     if network == "host" {
@@ -302,7 +395,11 @@ pub fn compose_from_inspect(c: &serde_json::Value, image: &serde_json::Value) ->
             for b in binds.as_array().cloned().unwrap_or_default() {
                 let ip = b["HostIp"].as_str().unwrap_or_default();
                 let hp = b["HostPort"].as_str().unwrap_or_default();
-                ports.push(if ip.is_empty() { format!("{hp}:{container_port}") } else { format!("{ip}:{hp}:{container_port}") });
+                ports.push(if ip.is_empty() {
+                    format!("{hp}:{container_port}")
+                } else {
+                    format!("{ip}:{hp}:{container_port}")
+                });
             }
         }
     }
@@ -314,14 +411,21 @@ pub fn compose_from_inspect(c: &serde_json::Value, image: &serde_json::Value) ->
     let mut vols = Vec::new();
     for m in c["Mounts"].as_array().cloned().unwrap_or_default() {
         let dest = m["Destination"].as_str().unwrap_or_default();
-        let ro = if m["RW"].as_bool() == Some(false) { ":ro" } else { "" };
+        let ro = if m["RW"].as_bool() == Some(false) {
+            ":ro"
+        } else {
+            ""
+        };
         match m["Type"].as_str() {
             Some("volume") => {
                 let n = m["Name"].as_str().unwrap_or_default().to_string();
                 vols.push(format!("{n}:{dest}{ro}"));
                 named.push(n);
             }
-            Some("bind") => vols.push(format!("{}:{dest}{ro}", m["Source"].as_str().unwrap_or_default())),
+            Some("bind") => vols.push(format!(
+                "{}:{dest}{ro}",
+                m["Source"].as_str().unwrap_or_default()
+            )),
             Some(other) => unsupported.push(format!("{other} mounts")),
             None => {}
         }
@@ -335,7 +439,12 @@ pub fn compose_from_inspect(c: &serde_json::Value, image: &serde_json::Value) ->
         out.push("    extra_hosts:".into());
         out.extend(hosts.iter().map(|h| format!("      - {}", yq(h))));
     }
-    let list = |v: &[String]| format!("[{}]", v.iter().map(|x| yq(x)).collect::<Vec<_>>().join(", "));
+    let list = |v: &[String]| {
+        format!(
+            "[{}]",
+            v.iter().map(|x| yq(x)).collect::<Vec<_>>().join(", ")
+        )
+    };
     let cmd = strs(&cfg["Cmd"]);
     if !cmd.is_empty() && cmd != strs(&icfg["Cmd"]) {
         out.push(format!("    command: {}", list(&cmd)));
@@ -344,7 +453,10 @@ pub fn compose_from_inspect(c: &serde_json::Value, image: &serde_json::Value) ->
     if !ep.is_empty() && ep != strs(&icfg["Entrypoint"]) {
         out.push(format!("    entrypoint: {}", list(&ep)));
     }
-    if let Some(u) = cfg["User"].as_str().filter(|u| !u.is_empty() && Some(*u) != icfg["User"].as_str()) {
+    if let Some(u) = cfg["User"]
+        .as_str()
+        .filter(|u| !u.is_empty() && Some(*u) != icfg["User"].as_str())
+    {
         out.push(format!("    user: {}", yq(u)));
     }
     let head = out.join("\n");
@@ -366,12 +478,24 @@ pub fn compose_from_inspect(c: &serde_json::Value, image: &serde_json::Value) ->
         let mut b = vec!["\n    environment:".to_string()];
         for e in &env {
             let (k, v) = e.split_once('=').unwrap_or((e, ""));
-            b.push(format!("      {k}: {}", if mask { "\"********\"".to_string() } else { yq(v) }));
+            b.push(format!(
+                "      {k}: {}",
+                if mask {
+                    "\"********\"".to_string()
+                } else {
+                    yq(v)
+                }
+            ));
         }
         b.join("\n")
     };
     let build = |mask: bool| format!("{head}{}\n{tail}\n", env_block(mask));
-    ComposePlan { yaml: build(false), masked: build(true), unsupported, restart }
+    ComposePlan {
+        yaml: build(false),
+        masked: build(true),
+        unsupported,
+        restart,
+    }
 }
 
 pub fn compose_update_commands(config_file: &str) -> Vec<Command> {
@@ -389,10 +513,16 @@ pub async fn update_compose(conn: &Connection, config_file: &str) -> Result<Acti
         log.extend_from_slice(&out.stdout);
         log.extend_from_slice(&out.stderr);
         if !out.success() {
-            return Ok(ActionReport { success: false, output_tail: crate::tail(&log) });
+            return Ok(ActionReport {
+                success: false,
+                output_tail: crate::tail(&log),
+            });
         }
     }
-    Ok(ActionReport { success: true, output_tail: crate::tail(&log) })
+    Ok(ActionReport {
+        success: true,
+        output_tail: crate::tail(&log),
+    })
 }
 
 #[cfg(test)]
@@ -416,8 +546,14 @@ not json"#;
     #[test]
     fn compose_commands_are_quoted() {
         let cmds = compose_update_commands("/srv/my app/compose.yaml");
-        assert_eq!(cmds[0].as_str(), "docker compose -f '/srv/my app/compose.yaml' pull");
-        assert_eq!(cmds[1].as_str(), "docker compose -f '/srv/my app/compose.yaml' up -d");
+        assert_eq!(
+            cmds[0].as_str(),
+            "docker compose -f '/srv/my app/compose.yaml' pull"
+        );
+        assert_eq!(
+            cmds[1].as_str(),
+            "docker compose -f '/srv/my app/compose.yaml' up -d"
+        );
     }
 }
 
@@ -426,7 +562,12 @@ mod set_image_tests {
     use super::SET_IMAGE;
 
     fn run(file: &std::path::Path, old: &str, new: &str) -> std::process::Output {
-        std::process::Command::new("sh").args(["-c", SET_IMAGE, "sh"]).arg(file).args([old, new]).output().unwrap()
+        std::process::Command::new("sh")
+            .args(["-c", SET_IMAGE, "sh"])
+            .arg(file)
+            .args([old, new])
+            .output()
+            .unwrap()
     }
 
     #[test]
@@ -459,14 +600,19 @@ mod compose_tests {
             "HostConfig": {"NetworkMode": "host", "RestartPolicy": {"Name": "always"}, "ExtraHosts": ["host.docker.internal:127.0.0.1"], "PortBindings": {}},
             "Mounts": [{"Type": "volume", "Name": "open-webui", "Destination": "/app/backend/data", "RW": true}]
         });
-        let i = serde_json::json!({"Config": {"Env": ["PATH=/usr/bin"], "Cmd": ["bash", "start.sh"]}});
+        let i =
+            serde_json::json!({"Config": {"Env": ["PATH=/usr/bin"], "Cmd": ["bash", "start.sh"]}});
         let p = compose_from_inspect(&c, &i);
         assert!(p.unsupported.is_empty());
         assert!(p.yaml.contains("    network_mode: host\n"));
-        assert!(p.yaml.contains("      - \"open-webui:/app/backend/data\"\n"));
+        assert!(p
+            .yaml
+            .contains("      - \"open-webui:/app/backend/data\"\n"));
         assert!(p.yaml.contains("      SECRET: \"a$$b\""));
         assert!(!p.masked.contains("a$$b"));
-        assert!(p.yaml.contains("volumes:\n  open-webui:\n    external: true"));
+        assert!(p
+            .yaml
+            .contains("volumes:\n  open-webui:\n    external: true"));
         assert!(!p.yaml.contains("command:"));
         assert_eq!(p.restart, "always");
     }
@@ -483,7 +629,10 @@ mod compose_tests {
 mod time_tests {
     #[test]
     fn parses_docker_times() {
-        assert_eq!(super::rfc3339_to_unix("2026-11-20T03:47:00.123Z"), Some(1795146420));
+        assert_eq!(
+            super::rfc3339_to_unix("2026-11-20T03:47:00.123Z"),
+            Some(1795146420)
+        );
         assert_eq!(super::rfc3339_to_unix("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(super::rfc3339_to_unix("0001-01-01T00:00:00Z"), None);
     }
@@ -515,8 +664,11 @@ struct ImageLine {
 
 /// True for a full image ID such as `sha256:` followed by 64 hex digits.
 pub fn valid_image_id(id: &str) -> bool {
-    id.strip_prefix("sha256:")
-        .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+    id.strip_prefix("sha256:").is_some_and(|h| {
+        h.len() == 64
+            && h.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    })
 }
 
 fn parse_images(out: &str, used: &std::collections::HashSet<String>) -> Vec<UnusedImage> {
@@ -524,20 +676,34 @@ fn parse_images(out: &str, used: &std::collections::HashSet<String>) -> Vec<Unus
     out.lines()
         .filter_map(|l| serde_json::from_str::<ImageLine>(l.trim()).ok())
         .filter(|i| valid_image_id(&i.id) && !used.contains(&i.id) && seen.insert(i.id.clone()))
-        .map(|i| UnusedImage { id: i.id, repository: i.repository, tag: i.tag, size: i.size, created: i.created })
+        .map(|i| UnusedImage {
+            id: i.id,
+            repository: i.repository,
+            tag: i.tag,
+            size: i.size,
+            created: i.created,
+        })
         .collect()
 }
 
 /// Lists images that no container, running or stopped, uses. Read only.
-pub async fn unused_images(conn: &Connection) -> Result<std::result::Result<Vec<UnusedImage>, String>> {
-    let ids = conn.run(&Command::new("docker").args(["container", "ls", "-a", "-q", "--no-trunc"])).await?;
+pub async fn unused_images(
+    conn: &Connection,
+) -> Result<std::result::Result<Vec<UnusedImage>, String>> {
+    let ids = conn
+        .run(&Command::new("docker").args(["container", "ls", "-a", "-q", "--no-trunc"]))
+        .await?;
     if !ids.success() {
         return Ok(Err(String::from_utf8_lossy(&ids.stderr).trim().to_string()));
     }
-    let ids: Vec<String> = String::from_utf8_lossy(&ids.stdout).split_whitespace().map(str::to_string).collect();
+    let ids: Vec<String> = String::from_utf8_lossy(&ids.stdout)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
     let mut used = std::collections::HashSet::new();
     if !ids.is_empty() {
-        let mut cmd = Command::new("docker").args(["container", "inspect", "--format", "{{.Image}}"]);
+        let mut cmd =
+            Command::new("docker").args(["container", "inspect", "--format", "{{.Image}}"]);
         for id in &ids {
             cmd = cmd.arg(id);
         }
@@ -545,7 +711,11 @@ pub async fn unused_images(conn: &Connection) -> Result<std::result::Result<Vec<
         if !out.success() {
             return Ok(Err(String::from_utf8_lossy(&out.stderr).trim().to_string()));
         }
-        used.extend(String::from_utf8_lossy(&out.stdout).split_whitespace().map(str::to_string));
+        used.extend(
+            String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .map(str::to_string),
+        );
     }
     let out = conn
         .run(&Command::new("docker").args(["image", "ls", "--no-trunc", "--format", "{{json .}}"]))
@@ -553,7 +723,10 @@ pub async fn unused_images(conn: &Connection) -> Result<std::result::Result<Vec<
     if !out.success() {
         return Ok(Err(String::from_utf8_lossy(&out.stderr).trim().to_string()));
     }
-    Ok(Ok(parse_images(&String::from_utf8_lossy(&out.stdout), &used)))
+    Ok(Ok(parse_images(
+        &String::from_utf8_lossy(&out.stdout),
+        &used,
+    )))
 }
 
 #[cfg(test)]

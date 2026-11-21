@@ -31,7 +31,9 @@ pub fn parse(output: &str) -> Option<Telemetry> {
     let (mut total, mut avail) = (0f64, 0f64);
     let mut seen = 0;
     for line in output.lines() {
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         let v = v.trim();
         match k.trim() {
             "load" => t.load1 = v.parse().ok()?,

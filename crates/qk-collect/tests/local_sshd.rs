@@ -17,15 +17,22 @@ async fn scans_apt_host() {
         eprintln!("skipped: local sshd not configured");
         return;
     };
-    let identity = qk_ssh::load_or_create_identity(std::path::Path::new(&key), None).unwrap().key;
+    let identity = qk_ssh::load_or_create_identity(std::path::Path::new(&key), None)
+        .unwrap()
+        .key;
     let target = Target {
         address: "127.0.0.1".into(),
         port: port.parse().unwrap(),
         username: std::env::var("USER").unwrap(),
     };
-    let conn = connect(&target, Arc::new(identity), TrustPolicy::Pinned(fp), Duration::from_secs(10))
-        .await
-        .unwrap();
+    let conn = connect(
+        &target,
+        Arc::new(identity),
+        TrustPolicy::Pinned(fp),
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
     let result = qk_collect::scan(&conn, OsType::Apt).await.unwrap();
     eprintln!(
         "updates={} security={} reboot_required={}",
@@ -33,5 +40,8 @@ async fn scans_apt_host() {
         result.updates.iter().filter(|u| u.security).count(),
         result.reboot_required
     );
-    assert!(result.updates.iter().all(|u| !u.name.is_empty() && !u.available_version.is_empty()));
+    assert!(result
+        .updates
+        .iter()
+        .all(|u| !u.name.is_empty() && !u.available_version.is_empty()));
 }

@@ -24,8 +24,14 @@ fn parse_os_release(text: &str) -> Option<(String, String)> {
     let mut it = text.split_whitespace();
     let id = it.next()?;
     let version = it.next().unwrap_or("");
-    let ok = |s: &str| !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
-    (ok(id) && (version.is_empty() || ok(version))).then(|| (id.to_lowercase(), version.to_string()))
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 32
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    };
+    (ok(id) && (version.is_empty() || ok(version)))
+        .then(|| (id.to_lowercase(), version.to_string()))
 }
 
 pub fn packages_command(os: OsType) -> Command {
@@ -47,7 +53,12 @@ pub fn parse_packages(os: OsType, text: &str) -> Vec<qk_core::updates::Installed
             OsType::Pacman => {
                 let mut it = l.split_whitespace();
                 let (name, version) = (it.next()?.to_string(), it.next()?.to_string());
-                Some(InstalledPackage { source: name.clone(), source_version: version.clone(), name, version })
+                Some(InstalledPackage {
+                    source: name.clone(),
+                    source_version: version.clone(),
+                    name,
+                    version,
+                })
             }
             _ => {
                 let mut it = l.split('\t');
@@ -56,9 +67,24 @@ pub fn parse_packages(os: OsType, text: &str) -> Vec<qk_core::updates::Installed
                 }
                 let name = it.next()?.trim().to_string();
                 let version = it.next()?.trim().to_string();
-                let source = it.next().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&name).to_string();
-                let source_version = it.next().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&version).to_string();
-                Some(InstalledPackage { name, version, source, source_version })
+                let source = it
+                    .next()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&name)
+                    .to_string();
+                let source_version = it
+                    .next()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&version)
+                    .to_string();
+                Some(InstalledPackage {
+                    name,
+                    version,
+                    source,
+                    source_version,
+                })
             }
         })
         .filter(|p| !p.name.is_empty() && !p.version.is_empty())
@@ -110,7 +136,9 @@ pub async fn scan(conn: &Connection, os: OsType) -> Result<ScanResult> {
     };
     let mut updates = updates;
     if matches!(os, OsType::Apt | OsType::Kali) && !updates.is_empty() {
-        let sim = conn.run(&Command::new("env").args(["LC_ALL=C", "apt-get", "-s", "upgrade"])).await?;
+        let sim = conn
+            .run(&Command::new("env").args(["LC_ALL=C", "apt-get", "-s", "upgrade"]))
+            .await?;
         if sim.success() {
             let held = parse_apt_held(&String::from_utf8_lossy(&sim.stdout));
             for u in &mut updates {
@@ -128,17 +156,34 @@ pub async fn scan(conn: &Connection, os: OsType) -> Result<ScanResult> {
     let autoremove = if os == OsType::Pacman {
         0
     } else {
-        let sim = conn.run(&Command::new("env").args(["LC_ALL=C", "apt-get", "-s", "autoremove"])).await?;
-        if sim.success() { count_removals(&String::from_utf8_lossy(&sim.stdout)) } else { 0 }
+        let sim = conn
+            .run(&Command::new("env").args(["LC_ALL=C", "apt-get", "-s", "autoremove"]))
+            .await?;
+        if sim.success() {
+            count_removals(&String::from_utf8_lossy(&sim.stdout))
+        } else {
+            0
+        }
     };
-    let release = conn.run(&Command::new("sh").args(["-c", OS_RELEASE])).await?;
+    let release = conn
+        .run(&Command::new("sh").args(["-c", OS_RELEASE]))
+        .await?;
     let os_release = parse_os_release(&String::from_utf8_lossy(&release.stdout));
-    Ok(ScanResult { updates, reboot_required, packages, os_release, autoremove })
+    Ok(ScanResult {
+        updates,
+        reboot_required,
+        packages,
+        os_release,
+        autoremove,
+    })
 }
 
 /// Counts the packages an `apt-get -s` simulation would remove.
 pub fn count_removals(simulation: &str) -> u32 {
-    simulation.lines().filter(|l| l.starts_with("Remv ")).count() as u32
+    simulation
+        .lines()
+        .filter(|l| l.starts_with("Remv "))
+        .count() as u32
 }
 
 pub const SUDOERS_PATH: &str = "/etc/sudoers.d/quietkeep";
@@ -175,7 +220,13 @@ const PROXMOX_UPGRADE: &[&str] = &[
     "Dpkg::Options::=--force-confold",
     "dist-upgrade",
 ];
-const APT_AUTOREMOVE: &[&str] = &["/usr/bin/env", "DEBIAN_FRONTEND=noninteractive", "/usr/bin/apt-get", "-y", "autoremove"];
+const APT_AUTOREMOVE: &[&str] = &[
+    "/usr/bin/env",
+    "DEBIAN_FRONTEND=noninteractive",
+    "/usr/bin/apt-get",
+    "-y",
+    "autoremove",
+];
 const PACMAN_UPGRADE: &[&str] = &["/usr/bin/pacman", "-Syu", "--noconfirm"];
 const REBOOT: &[&str] = &["/usr/bin/systemctl", "reboot"];
 
@@ -187,7 +238,9 @@ pub fn privileged_commands(os: OsType, action: Action) -> Vec<&'static [&'static
         (Action::Patch, OsType::Apt | OsType::Kali) => vec![APT_UPDATE, APT_UPGRADE],
         (Action::Patch, OsType::Proxmox) => vec![APT_UPDATE, PROXMOX_UPGRADE],
         (Action::Patch, OsType::Pacman) => vec![PACMAN_UPGRADE],
-        (Action::Held, OsType::Apt | OsType::Kali | OsType::Proxmox) => vec![APT_UPDATE, PROXMOX_UPGRADE],
+        (Action::Held, OsType::Apt | OsType::Kali | OsType::Proxmox) => {
+            vec![APT_UPDATE, PROXMOX_UPGRADE]
+        }
         (Action::Autoremove, OsType::Apt | OsType::Kali | OsType::Proxmox) => vec![APT_AUTOREMOVE],
         (Action::Held | Action::Autoremove, OsType::Pacman) => vec![],
     }
@@ -208,19 +261,47 @@ fn sudoers_escape(arg: &str) -> String {
     out
 }
 
-fn sudoers_line(argv: &[&str]) -> String {
-    argv.iter().map(|a| sudoers_escape(a)).collect::<Vec<_>>().join(" ")
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        out.push(if c == '\\' {
+            chars.next().unwrap_or(c)
+        } else {
+            c
+        });
+    }
+    out
 }
 
-/// Commands `sudo -l` lists as runnable as root without a password, as sudoers writes them.
+fn nopasswd_allows(allowed: &[String], argv: &[&str]) -> bool {
+    let cmd = argv.join(" ");
+    allowed.iter().any(|a| a == "ALL" || *a == cmd)
+}
+
+fn sudoers_line(argv: &[&str]) -> String {
+    argv.iter()
+        .map(|a| sudoers_escape(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Commands `sudo -l` lists as runnable as root without a password, with sudoers escapes removed.
+/// Classic sudo lists commands escaped and sudo-rs lists them plain.
 pub fn nopasswd_commands(listing: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in listing.lines().map(str::trim) {
         if !(line.starts_with("(root") || line.starts_with("(ALL")) {
             continue;
         }
-        let Some(i) = line.find("NOPASSWD:") else { continue };
-        out.extend(line[i + "NOPASSWD:".len()..].split(", ").map(|c| c.trim().to_string()));
+        let Some(i) = line.find("NOPASSWD:") else {
+            continue;
+        };
+        out.extend(
+            line[i + "NOPASSWD:".len()..]
+                .split(", ")
+                .map(|c| unescape(c.trim())),
+        );
     }
     out
 }
@@ -229,7 +310,12 @@ pub fn nopasswd_commands(listing: &str) -> Vec<String> {
 /// with no wildcards. `username` must already be validated as a POSIX login name.
 pub fn sudoers_rule(username: &str, os: OsType) -> String {
     let mut cmds: Vec<String> = Vec::new();
-    for action in [Action::Patch, Action::Held, Action::Autoremove, Action::Reboot] {
+    for action in [
+        Action::Patch,
+        Action::Held,
+        Action::Autoremove,
+        Action::Reboot,
+    ] {
         for argv in privileged_commands(os, action) {
             let line = sudoers_line(argv);
             if !cmds.contains(&line) {
@@ -248,18 +334,25 @@ pub fn sudoers_rule(username: &str, os: OsType) -> String {
 /// True when sudo on the host allows every command of the action without a password.
 /// Reads the user's own `sudo -l` listing, because `sudo -l <command>` also succeeds for
 /// commands that are allowed only with a password.
-pub async fn sudo_allowed(conn: &Connection, os: OsType, action: Action, as_root: bool) -> Result<bool> {
+pub async fn sudo_allowed(
+    conn: &Connection,
+    os: OsType,
+    action: Action,
+    as_root: bool,
+) -> Result<bool> {
     if as_root {
         return Ok(true);
     }
-    let out = conn.run(&Command::new("env").args(["LC_ALL=C", "sudo", "-n", "-l"])).await?;
+    let out = conn
+        .run(&Command::new("env").args(["LC_ALL=C", "sudo", "-n", "-l"]))
+        .await?;
     if !out.success() {
         return Ok(false);
     }
     let allowed = nopasswd_commands(&String::from_utf8_lossy(&out.stdout));
     Ok(privileged_commands(os, action)
         .into_iter()
-        .all(|argv| allowed.iter().any(|a| a == "ALL" || *a == sudoers_line(argv))))
+        .all(|argv| nopasswd_allows(&allowed, argv)))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -272,28 +365,43 @@ pub struct ActionReport {
 const TAIL_BYTES: usize = 4000;
 
 /// Runs the action's commands, through `sudo -n` unless the login user is already root.
-pub async fn run_action(conn: &Connection, os: OsType, action: Action, as_root: bool) -> Result<ActionReport> {
+pub async fn run_action(
+    conn: &Connection,
+    os: OsType,
+    action: Action,
+    as_root: bool,
+) -> Result<ActionReport> {
     let mut log = Vec::new();
     for argv in privileged_commands(os, action) {
         let cmd = if as_root {
             Command::new(argv[0]).args(argv[1..].iter().copied())
         } else {
-            Command::new("sudo").args(["-n", "--"]).args(argv.iter().copied())
+            Command::new("sudo")
+                .args(["-n", "--"])
+                .args(argv.iter().copied())
         };
         let out = conn.run(&cmd).await?;
         log.extend_from_slice(&out.stdout);
         log.extend_from_slice(&out.stderr);
         if !out.success() {
-            return Ok(ActionReport { success: false, output_tail: tail(&log) });
+            return Ok(ActionReport {
+                success: false,
+                output_tail: tail(&log),
+            });
         }
     }
-    Ok(ActionReport { success: true, output_tail: tail(&log) })
+    Ok(ActionReport {
+        success: true,
+        output_tail: tail(&log),
+    })
 }
 
 pub(crate) fn tail(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let start = text.len().saturating_sub(TAIL_BYTES);
-    let start = (start..text.len()).find(|i| text.is_char_boundary(*i)).unwrap_or(text.len());
+    let start = (start..text.len())
+        .find(|i| text.is_char_boundary(*i))
+        .unwrap_or(text.len());
     text[start..].trim().to_string()
 }
 
@@ -322,11 +430,23 @@ mod tests {
     fn nopasswd_listing_is_exact() {
         let listing = "User qkpw may run the following commands on box:\n    (ALL : ALL) ALL\n    (root) NOPASSWD: /usr/bin/apt-get update -qq, /usr/bin/env DEBIAN_FRONTEND\\=noninteractive /usr/bin/apt-get -y -o Dpkg\\:\\:Options\\:\\:\\=--force-confdef -o Dpkg\\:\\:Options\\:\\:\\=--force-confold upgrade, /usr/bin/systemctl reboot\n";
         let allowed = nopasswd_commands(listing);
-        let ok = |a: Action| privileged_commands(OsType::Apt, a).into_iter().all(|argv| allowed.contains(&sudoers_line(argv)));
+        let ok = |a: Action| {
+            privileged_commands(OsType::Apt, a)
+                .into_iter()
+                .all(|argv| nopasswd_allows(&allowed, argv))
+        };
         assert!(ok(Action::Patch));
         assert!(ok(Action::Reboot));
         assert!(!ok(Action::Held));
         assert!(!ok(Action::Autoremove));
+        let sudo_rs = "    (ALL : ALL) ALL\n    (root) NOPASSWD: /usr/bin/apt-get update -qq, /usr/bin/env DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get -y autoremove\n";
+        let allowed = nopasswd_commands(sudo_rs);
+        assert!(privileged_commands(OsType::Apt, Action::Autoremove)
+            .into_iter()
+            .all(|argv| nopasswd_allows(&allowed, argv)));
+        assert!(!privileged_commands(OsType::Apt, Action::Patch)
+            .into_iter()
+            .all(|argv| nopasswd_allows(&allowed, argv)));
         assert_eq!(nopasswd_commands("    (ALL) NOPASSWD: ALL"), vec!["ALL"]);
         assert!(nopasswd_commands("    (ALL : ALL) ALL").is_empty());
     }
@@ -335,7 +455,10 @@ mod tests {
     fn removals_are_counted() {
         let sim = "Reading package lists...\nRemv linux-image-6.8.0-40-generic [6.8.0-40.40]\nRemv libfoo1 [1.0]\n";
         assert_eq!(count_removals(sim), 2);
-        assert_eq!(count_removals("0 upgraded, 0 newly installed, 0 to remove"), 0);
+        assert_eq!(
+            count_removals("0 upgraded, 0 newly installed, 0 to remove"),
+            0
+        );
     }
 
     #[test]
@@ -346,9 +469,9 @@ mod tests {
         );
     }
 }
+pub mod access;
 pub mod docker;
 pub mod telemetry;
-pub mod access;
 
 #[cfg(test)]
 mod package_tests {
@@ -360,10 +483,22 @@ mod package_tests {
         let p = parse_packages(OsType::Apt, apt);
         assert_eq!(p.len(), 3);
         assert_eq!(p[1].source, "linux-signed-aws-6.8");
-        assert_eq!((p[2].source.as_str(), p[2].source_version.as_str()), ("bare", "2.0"));
-        assert_eq!(parse_os_release("ubuntu 22.04\n"), Some(("ubuntu".into(), "22.04".into())));
-        assert_eq!(parse_os_release("arch\n"), Some(("arch".into(), String::new())));
+        assert_eq!(
+            (p[2].source.as_str(), p[2].source_version.as_str()),
+            ("bare", "2.0")
+        );
+        assert_eq!(
+            parse_os_release("ubuntu 22.04\n"),
+            Some(("ubuntu".into(), "22.04".into()))
+        );
+        assert_eq!(
+            parse_os_release("arch\n"),
+            Some(("arch".into(), String::new()))
+        );
         assert_eq!(parse_os_release("x;rm 1\n"), None);
-        assert_eq!(parse_packages(OsType::Pacman, "sudo 1.9.16-1\nbash 5.2\n").len(), 2);
+        assert_eq!(
+            parse_packages(OsType::Pacman, "sudo 1.9.16-1\nbash 5.2\n").len(),
+            2
+        );
     }
 }

@@ -2,6 +2,10 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.13.1
+
+- Fix: on hosts that use sudo-rs, such as Ubuntu 26.04, QuietKeep did not recognize its own sudoers rule and kept asking to install it
+
 ## 0.13.0
 
 - Patches: Install held installs updates apt keeps back because they need new packages, such as new kernels, using apt-get dist-upgrade. The button is amber and shows how many are waiting

@@ -22,7 +22,11 @@ pub fn install_key_command(public_key: &str) -> Command {
 }
 
 pub fn install_sudoers_command(rule: &str, as_root: bool) -> Command {
-    let base = if as_root { Command::new("sh") } else { Command::new("sudo").args(["-S", "-p", "", "--", "sh"]) };
+    let base = if as_root {
+        Command::new("sh")
+    } else {
+        Command::new("sudo").args(["-S", "-p", "", "--", "sh"])
+    };
     base.args(["-c", INSTALL_SUDOERS, "sh", rule, SUDOERS_PATH])
 }
 
@@ -36,7 +40,8 @@ pub fn describe(use_agent: bool, install_sudoers: bool, as_root: bool) -> Vec<St
     let mut steps = vec![
         login.to_string(),
         "Create ~/.ssh with mode 700 and authorized_keys with mode 600 if needed.".to_string(),
-        "Add QuietKeep's public key to ~/.ssh/authorized_keys if it is not already there.".to_string(),
+        "Add QuietKeep's public key to ~/.ssh/authorized_keys if it is not already there."
+            .to_string(),
     ];
     if install_sudoers {
         steps.push(format!(
@@ -55,16 +60,29 @@ pub async fn install_key(conn: &Connection, public_key: &str) -> Result<ActionRe
     let out = conn.run(&install_key_command(public_key)).await?;
     let mut log = out.stdout.clone();
     log.extend_from_slice(&out.stderr);
-    Ok(ActionReport { success: out.success(), output_tail: tail(&log) })
+    Ok(ActionReport {
+        success: out.success(),
+        output_tail: tail(&log),
+    })
 }
 
-pub async fn install_sudoers(conn: &Connection, rule: &str, password: &str, as_root: bool) -> Result<ActionReport> {
+pub async fn install_sudoers(
+    conn: &Connection,
+    rule: &str,
+    password: &str,
+    as_root: bool,
+) -> Result<ActionReport> {
     let input = format!("{password}\n");
     let stdin = (!as_root).then_some(input.as_bytes());
-    let out = conn.run_with_stdin(&install_sudoers_command(rule, as_root), stdin).await?;
+    let out = conn
+        .run_with_stdin(&install_sudoers_command(rule, as_root), stdin)
+        .await?;
     let mut log = out.stdout.clone();
     log.extend_from_slice(&out.stderr);
-    Ok(ActionReport { success: out.success(), output_tail: tail(&log) })
+    Ok(ActionReport {
+        success: out.success(),
+        output_tail: tail(&log),
+    })
 }
 
 #[cfg(test)]
@@ -75,13 +93,21 @@ mod tests {
     fn key_is_a_positional_argument() {
         let cmd = install_key_command("ssh-ed25519 AAAA'x quietkeep\n");
         assert!(cmd.as_str().starts_with("sh -c "));
-        assert!(cmd.as_str().ends_with(r#" sh 'ssh-ed25519 AAAA'\''x quietkeep'"#));
+        assert!(cmd
+            .as_str()
+            .ends_with(r#" sh 'ssh-ed25519 AAAA'\''x quietkeep'"#));
     }
 
     #[test]
     fn sudoers_uses_sudo_unless_root() {
-        assert!(install_sudoers_command("r", false).as_str().starts_with("sudo -S -p '' -- sh -c "));
-        assert!(install_sudoers_command("r", true).as_str().starts_with("sh -c "));
-        assert!(install_sudoers_command("r", true).as_str().ends_with(" sh r /etc/sudoers.d/quietkeep"));
+        assert!(install_sudoers_command("r", false)
+            .as_str()
+            .starts_with("sudo -S -p '' -- sh -c "));
+        assert!(install_sudoers_command("r", true)
+            .as_str()
+            .starts_with("sh -c "));
+        assert!(install_sudoers_command("r", true)
+            .as_str()
+            .ends_with(" sh r /etc/sudoers.d/quietkeep"));
     }
 }
