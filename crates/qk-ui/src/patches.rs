@@ -11,6 +11,16 @@ struct ActionDialog {
     check: PrivilegeCheck,
 }
 
+/// Dialog title, progress text and confirm button label for each action.
+fn action_text(action: &str) -> (&'static str, &'static str, &'static str) {
+    match action {
+        "patch" => ("Apply updates on", "Applying updates on", "Apply updates"),
+        "held" => ("Install held updates on", "Installing held updates on", "Install held updates"),
+        "autoremove" => ("Remove unused packages on", "Removing unused packages on", "Remove packages"),
+        _ => ("Reboot", "Rebooting", "Reboot"),
+    }
+}
+
 pub(crate) fn ago(ts: Option<i64>) -> String {
     let Some(ts) = ts else { return "Never".into() };
     let secs = ((js_sys::Date::now() / 1000.0) as i64 - ts).max(0);
@@ -31,6 +41,7 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
     let details = RwSignal::new(None::<(String, Vec<PackageUpdate>)>);
     let dialog = RwSignal::new(None::<ActionDialog>);
     let running = RwSignal::new(None::<i64>);
+    let sudo_pw = RwSignal::new(String::new());
 
     let load = move || {
         spawn_local(async move {
@@ -162,15 +173,30 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
         dialog.set(None);
         open_action(d.id, d.name, d.action);
     };
+    let update_rule = move |_| {
+        let Some(d) = dialog.get_untracked() else { return };
+        let pw = sudo_pw.get_untracked();
+        sudo_pw.set(String::new());
+        dialog.set(None);
+        running.set(Some(d.id));
+        notice.set(Some(format!("Updating the sudoers rule on {}...", d.name)));
+        spawn_local(async move {
+            let result = api::update_sudoers(d.id, pw).await;
+            running.set(None);
+            match result {
+                Ok(msg) => {
+                    notice.set(Some(msg));
+                    open_action(d.id, d.name, d.action);
+                }
+                Err(e) => notice.set(Some(e)),
+            }
+        })
+    };
     let confirm_action = move |_| {
         let Some(d) = dialog.get_untracked() else { return };
         dialog.set(None);
         running.set(Some(d.id));
-        notice.set(Some(if d.action == "patch" {
-            format!("Applying updates on {}...", d.name)
-        } else {
-            format!("Rebooting {}...", d.name)
-        }));
+        notice.set(Some(format!("{} {}...", action_text(d.action).1, d.name)));
         spawn_local(async move {
             match api::run_action(d.id, d.action).await {
                 Ok(msg) => notice.set(Some(msg)),
@@ -242,13 +268,16 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
             <tbody>
                 <For
                     each=visible
-                    key=|r| (r.host_id, r.last_scan_at, r.pending, r.held, r.security, r.reboot_required, r.scan_error.clone(), r.host_key_trusted)
+                    key=|r| (r.host_id, r.last_scan_at, r.pending, r.held, r.security, r.reboot_required, r.scan_error.clone(), r.host_key_trusted, r.kept_back, r.autoremove)
                     let:r
                 >
                     {
                         let id = r.host_id;
                         let (name_scan, name_show) = (r.name.clone(), r.name.clone());
                         let (name_patch, name_reboot) = (r.name.clone(), r.name.clone());
+                        let (name_held, name_auto) = (r.name.clone(), r.name.clone());
+                        let kept_back = r.kept_back;
+                        let autoremove = r.autoremove;
                         let reboot_required = r.reboot_required;
                         let pending = r.pending;
                         let held = r.held;
@@ -267,7 +296,7 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                                 <td>{r.name.clone()}</td>
                                 <td>{label(&r)}</td>
                                 <td>{r.pending}{(held > 0).then(|| view! {
-                                    <span class="pill held" title="apt upgrade skips these on purpose: Ubuntu is phasing them in gradually, or they need new packages. They install on their own later. See Details.">
+                                    <span class="pill held" title="apt upgrade skips these on purpose. Phased updates install on their own as Ubuntu rolls them out. Kept back updates, such as new kernels, need new packages: use Install held. See Details.">
                                         {format!("+{held} held")}
                                     </span>
                                 })}</td>
@@ -294,7 +323,15 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                                         disabled=move || !trusted || pending == 0 || running.get().is_some()
                                         title={if pending == 0 { "Nothing to patch" } else { "Apply pending updates" }}
                                         on:click=move |_| open_action(id, name_patch.clone(), "patch")>"Patch"</button>
-                                    <button class={if reboot_required { "btn small warn" } else { "btn small" }}
+                                    <button class={if kept_back > 0 { "btn small warn" } else { "btn small" }}
+                                        disabled=move || !trusted || kept_back == 0 || running.get().is_some()
+                                        title={if kept_back == 0 { "No kept back updates. Phased updates install on their own." } else { "Install kept back updates, such as new kernels, with apt-get dist-upgrade" }}
+                                        on:click=move |_| open_action(id, name_held.clone(), "held")>{if kept_back > 0 { format!("Install held ({kept_back})") } else { "Install held".to_string() }}</button>
+                                    <button class="btn small"
+                                        disabled=move || !trusted || autoremove == 0 || running.get().is_some()
+                                        title={if autoremove == 0 { "No unused packages to remove" } else { "Remove packages that were installed as dependencies and are no longer needed, such as old kernels" }}
+                                        on:click=move |_| open_action(id, name_auto.clone(), "autoremove")>{if autoremove > 0 { format!("Autoremove ({autoremove})") } else { "Autoremove".to_string() }}</button>
+                                    <button class={if reboot_required { "btn small danger" } else { "btn small" }}
                                         disabled=move || !trusted || !reboot_required || running.get().is_some()
                                         title={if reboot_required { "This host needs a reboot" } else { "No reboot needed" }}
                                         on:click=move |_| open_action(id, name_reboot.clone(), "reboot")>"Reboot"</button>
@@ -310,7 +347,7 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
             <div class="modal-backdrop">
                 <div class="modal wide">
                     {move || dialog.get().map(|d| {
-                        let verb = if d.action == "patch" { "Apply updates on" } else { "Reboot" };
+                        let (verb, _, button) = action_text(d.action);
                         if d.check.allowed {
                             view! {
                                 <h2>{format!("{verb} {}?", d.name)}</h2>
@@ -318,20 +355,30 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                                 {d.check.commands.iter().map(|c| view! { <p class="fingerprint mono">{c.clone()}</p> }).collect_view()}
                                 <div class="modal-actions">
                                     <button class="btn" on:click=move |_| dialog.set(None)>"Cancel"</button>
-                                    <button class="btn danger" on:click=confirm_action>{verb}</button>
+                                    <button class="btn danger" on:click=confirm_action>{button}</button>
                                 </div>
                             }.into_any()
                         } else {
                             view! {
                                 <h2>{format!("Allow QuietKeep on {}", d.name)}</h2>
                                 <p>{format!(
-                                    "{} does not allow QuietKeep to run these commands yet. On the host, run sudo visudo -f {} and paste this rule. It allows only these exact commands.",
-                                    d.name, d.check.sudoers_path
+                                    "{} does not allow QuietKeep to run these commands yet. Type the sudo password for this host and QuietKeep will install a rule that allows only its exact commands. The password is used once and never stored.",
+                                    d.name
                                 )}</p>
-                                <textarea class="keybox mono" readonly rows="8">{d.check.rule.clone()}</textarea>
+                                <input type="password" placeholder="sudo password" autocomplete="off"
+                                    prop:value=move || sudo_pw.get()
+                                    on:input=move |ev| sudo_pw.set(event_target_value(&ev)) />
+                                <details>
+                                    <summary>"Show the rule"</summary>
+                                    <p class="muted">{format!("To install it yourself, run sudo visudo -f {} on the host and paste this rule.", d.check.sudoers_path)}</p>
+                                    <textarea class="keybox mono" readonly rows="8">{d.check.rule.clone()}</textarea>
+                                </details>
                                 <div class="modal-actions">
-                                    <button class="btn" on:click=move |_| dialog.set(None)>"Close"</button>
-                                    <button class="btn primary" on:click=recheck>"Check again"</button>
+                                    <button class="btn" on:click=move |_| { sudo_pw.set(String::new()); dialog.set(None); }>"Close"</button>
+                                    <button class="btn" on:click=recheck>"Check again"</button>
+                                    <button class="btn primary" on:click=update_rule
+                                        disabled=move || sudo_pw.with(|p| p.is_empty())
+                                        title=move || if sudo_pw.with(|p| p.is_empty()) { "Type the sudo password first" } else { "Install the rule on the host" }>"Install rule"</button>
                                 </div>
                             }.into_any()
                         }
@@ -383,7 +430,7 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
 
 fn tone(msg: &str) -> &'static str {
     let m = msg.to_lowercase();
-    if m.contains("refused") || m.contains("error") || m.contains("could not") || m.contains("failed:") || m.contains("timed out") {
+    if m.contains("refused") || m.contains("error") || m.contains("could not") || m.contains("failed:") || m.contains(" failed on ") || m.contains("timed out") {
         return "bad";
     }
     let words: Vec<&str> = m.split_whitespace().collect();
@@ -393,7 +440,7 @@ fn tone(msg: &str) -> &'static str {
     "ok"
 }
 
-/// Status banner for long-running work: blue with a spinner while working, then green, amber or red.
+/// Status banner for long-running work: amber with a spinner while working, then green, amber or red.
 #[component]
 pub fn StatusLine(notice: RwSignal<Option<String>>, working: Signal<bool>) -> impl IntoView {
     view! {

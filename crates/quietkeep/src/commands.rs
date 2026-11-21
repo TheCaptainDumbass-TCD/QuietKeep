@@ -239,7 +239,7 @@ async fn scan_one(app: &AppHandle, h: Host) -> CmdResult<()> {
         Ok(r) => {
             let security = r.updates.iter().filter(|u| u.security).count();
             let mut s = store(&state);
-            s.record_scan(h.id, &r.updates, r.reboot_required).map_err(err)?;
+            s.record_scan(h.id, &r.updates, r.reboot_required, r.autoremove).map_err(err)?;
             s.record_packages(h.id, &r.packages).map_err(err)?;
             if let Some((os_id, os_version)) = &r.os_release {
                 s.record_os_release(h.id, os_id, os_version).map_err(err)?;
@@ -349,6 +349,8 @@ pub fn set_scan_interval(state: State<'_, AppState>, minutes: u32) -> CmdResult<
 fn parse_action(action: &str) -> CmdResult<qk_collect::Action> {
     match action {
         "patch" => Ok(qk_collect::Action::Patch),
+        "held" => Ok(qk_collect::Action::Held),
+        "autoremove" => Ok(qk_collect::Action::Autoremove),
         "reboot" => Ok(qk_collect::Action::Reboot),
         _ => Err("Unknown action.".into()),
     }
@@ -385,6 +387,9 @@ pub async fn check_privileged(app: AppHandle, id: i64, action: String) -> CmdRes
     let action = parse_action(&action)?;
     let h = host(&app.state::<AppState>(), id)?;
     let os = h.spec.os_type;
+    if qk_collect::privileged_commands(os, action).is_empty() {
+        return Err("This action is not available for this host's OS.".into());
+    }
     let conn = connect_trusted(&app, &h).await?;
     let as_root = h.spec.username == "root";
     let allowed = qk_collect::sudo_allowed(&conn, os, action, as_root).await.map_err(err);
@@ -409,6 +414,14 @@ pub async fn run_action(app: AppHandle, id: i64, action: String) -> CmdResult<St
     let action = parse_action(&action)?;
     let h = host(&app.state::<AppState>(), id)?;
     let name = h.spec.name.clone();
+    if qk_collect::privileged_commands(h.spec.os_type, action).is_empty() {
+        return Err("This action is not available for this host's OS.".into());
+    }
+    let (done, what) = match action {
+        qk_collect::Action::Held => ("Installed held updates", "Held updates"),
+        qk_collect::Action::Autoremove => ("Removed unused packages", "Autoremove"),
+        _ => ("Applied updates", "Updates"),
+    };
     let conn = connect_trusted(&app, &h).await?;
     let result = qk_collect::run_action(&conn, h.spec.os_type, action, h.spec.username == "root").await;
     let _ = conn.close().await;
@@ -418,25 +431,52 @@ pub async fn run_action(app: AppHandle, id: i64, action: String) -> CmdResult<St
             store(&state).log_activity("host.reboot", Some(id), &format!("Reboot requested for {name}")).map_err(err)?;
             Ok(format!("Reboot requested for {name}."))
         }
-        (qk_collect::Action::Patch, Ok(report)) if report.success => {
-            store(&state).log_activity("patch.completed", Some(id), &format!("Applied updates on {name}")).map_err(err)?;
+        (_, Ok(report)) if report.success => {
+            store(&state).log_activity("patch.completed", Some(id), &format!("{done} on {name}")).map_err(err)?;
             let _ = scan_one(&app, h).await;
             update_tray(&app);
-            Ok(format!("Applied updates on {name}."))
+            Ok(format!("{done} on {name}."))
         }
-        (qk_collect::Action::Patch, Ok(report)) => {
+        (_, Ok(report)) => {
             let last = report.output_tail.lines().last().unwrap_or("").to_string();
             store(&state)
-                .log_activity("patch.failed", Some(id), &format!("Updates failed on {name}: {last}"))
+                .log_activity("patch.failed", Some(id), &format!("{what} failed on {name}: {last}"))
                 .map_err(err)?;
-            Err(format!("Updates failed on {name}: {last}"))
+            Err(format!("{what} failed on {name}: {last}"))
         }
-        (qk_collect::Action::Patch, Err(e)) => {
+        (_, Err(e)) => {
             store(&state)
-                .log_activity("patch.failed", Some(id), &format!("Updates failed on {name}: {e}"))
+                .log_activity("patch.failed", Some(id), &format!("{what} failed on {name}: {e}"))
                 .map_err(err)?;
             Err(e.to_string())
         }
+    }
+}
+
+/// Installs QuietKeep's current sudoers rule using a sudo password typed once, logging in
+/// with QuietKeep's own key. The password is dropped when this returns.
+#[tauri::command]
+pub async fn update_sudoers(app: AppHandle, id: i64, password: String) -> CmdResult<String> {
+    let h = host(&app.state::<AppState>(), id)?;
+    let name = h.spec.name.clone();
+    if h.spec.username == "root" {
+        return Ok(format!("{name} logs in as root, so it needs no sudoers rule."));
+    }
+    let rule = qk_collect::sudoers_rule(&h.spec.username, h.spec.os_type);
+    let conn = connect_trusted(&app, &h).await?;
+    let result = qk_collect::access::install_sudoers(&conn, &rule, &password, false).await;
+    drop(password);
+    let _ = conn.close().await;
+    let report = result.map_err(err)?;
+    let state = app.state::<AppState>();
+    let s = store(&state);
+    if report.success {
+        s.log_activity("host.sudoers", Some(id), &format!("Updated the sudoers rule on {name}")).map_err(err)?;
+        Ok(format!("Updated the sudoers rule on {name}."))
+    } else {
+        let last = report.output_tail.lines().last().unwrap_or("sudo refused").to_string();
+        s.log_activity("host.sudoers_failed", Some(id), &format!("Sudoers update on {name} failed: {last}")).map_err(err)?;
+        Err(format!("Could not update the sudoers rule on {name}: {last}"))
     }
 }
 

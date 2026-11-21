@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0011_snooze.sql"),
     include_str!("migrations/0012_packages.sql"),
     include_str!("migrations/0013_sources.sql"),
+    include_str!("migrations/0014_autoremove.sql"),
 ];
 
 #[derive(Debug, Error)]
@@ -68,6 +69,10 @@ pub struct PatchStatus {
     /// Updates apt upgrade skips (phased or kept back); not counted in `pending`.
     pub held: u32,
     pub os_name: Option<String>,
+    /// Held updates apt keeps back because they need new packages, such as new kernels.
+    pub kept_back: u32,
+    /// Packages `apt-get autoremove` would remove.
+    pub autoremove: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -214,7 +219,7 @@ impl Store {
     }
 
 /// Replaces the host's pending updates with the results of a successful scan.
-    pub fn record_scan(&mut self, id: i64, updates: &[PackageUpdate], reboot_required: bool) -> Result<()> {
+    pub fn record_scan(&mut self, id: i64, updates: &[PackageUpdate], reboot_required: bool, autoremove: u32) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM pending_updates WHERE host_id = ?1", [id])?;
         {
@@ -228,8 +233,8 @@ impl Store {
             }
         }
         tx.execute(
-            "UPDATE hosts SET last_scan_at = unixepoch(), reboot_required = ?1, scan_error = NULL WHERE id = ?2",
-            params![reboot_required, id],
+            "UPDATE hosts SET last_scan_at = unixepoch(), reboot_required = ?1, autoremove = ?2, scan_error = NULL WHERE id = ?3",
+            params![reboot_required, autoremove, id],
         )?;
         tx.commit()?;
         Ok(())
@@ -324,7 +329,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT h.id, h.name, h.os_type, h.is_patch_target, h.host_key IS NOT NULL, h.last_scan_at,
                     COUNT(u.name) - COUNT(u.held), COALESCE(SUM(u.security AND u.held IS NULL), 0), h.reboot_required, h.scan_error,
-                    COUNT(u.held), h.os_name
+                    COUNT(u.held), h.os_name, COALESCE(SUM(u.held = 'kept back'), 0), h.autoremove
              FROM hosts h LEFT JOIN pending_updates u ON u.host_id = h.id
              GROUP BY h.id ORDER BY h.name",
         )?;
@@ -345,6 +350,8 @@ impl Store {
                 scan_error: r.get(9)?,
                 held: r.get(10)?,
                 os_name: r.get(11)?,
+                kept_back: r.get(12)?,
+                autoremove: r.get(13)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -732,7 +739,7 @@ mod tests {
             security: sec,
             held: None,
         };
-        store.record_scan(id, &[up("curl", false), up("openssl", true)], true).unwrap();
+        store.record_scan(id, &[up("curl", false), up("openssl", true)], true, 3).unwrap();
         let s = &store.patch_status().unwrap()[0];
         assert_eq!((s.pending, s.security, s.reboot_required), (2, 1, true));
         assert!(s.last_scan_at.is_some() && s.scan_error.is_none());
@@ -743,7 +750,7 @@ mod tests {
         assert_eq!(s.pending, 2);
         assert_eq!(s.scan_error.as_deref(), Some("timeout"));
 
-        store.record_scan(id, &[], false).unwrap();
+        store.record_scan(id, &[], false, 0).unwrap();
         let s = &store.patch_status().unwrap()[0];
         assert_eq!((s.pending, s.reboot_required), (0, false));
         assert!(s.scan_error.is_none());

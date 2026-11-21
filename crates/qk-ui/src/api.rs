@@ -140,6 +140,10 @@ pub struct PatchStatus {
     pub held: u32,
     #[serde(default)]
     pub os_name: Option<String>,
+    #[serde(default)]
+    pub kept_back: u32,
+    #[serde(default)]
+    pub autoremove: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -208,6 +212,15 @@ pub async fn check_privileged(id: i64, action: &'static str) -> Result<Privilege
 
 pub async fn run_action(id: i64, action: &'static str) -> Result<String, String> {
     invoke("run_action", args(&ActionArg { id, action })).await
+}
+
+pub async fn update_sudoers(id: i64, password: String) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct A {
+        id: i64,
+        password: String,
+    }
+    invoke("update_sudoers", args(&A { id, password })).await
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

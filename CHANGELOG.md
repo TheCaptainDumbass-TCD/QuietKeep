@@ -2,6 +2,15 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.13.0
+
+- Patches: Install held installs updates apt keeps back because they need new packages, such as new kernels, using apt-get dist-upgrade. The button is amber and shows how many are waiting
+- Patches: Autoremove removes packages that are no longer needed, such as old kernels. Scans count them so the button shows how many
+- Patches: Reboot is red when a reboot is needed
+- Patches: when a host's sudoers rule is missing or older than the current one, type the sudo password once and Install rule updates it. The password is never stored
+- Fix: the sudoers check no longer reports a command as allowed when sudo would still ask for a password
+- Long running work now shows an amber status banner
+
 ## 0.12.1
 
 - Security: findings the distribution rates unimportant, such as an OpenSSH bug that only affects builds without PAM, are labeled "Rated unimportant" and hidden by default instead of shown as No fix yet

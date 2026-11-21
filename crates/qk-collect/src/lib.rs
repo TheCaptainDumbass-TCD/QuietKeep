@@ -14,6 +14,8 @@ pub struct ScanResult {
     pub packages: Vec<qk_core::updates::InstalledPackage>,
     /// `ID` and `VERSION_ID` from /etc/os-release, such as `debian` and `13`.
     pub os_release: Option<(String, String)>,
+    /// Packages `apt-get autoremove` would remove.
+    pub autoremove: u32,
 }
 
 const OS_RELEASE: &str = r#". /etc/os-release 2>/dev/null; echo "$ID $VERSION_ID""#;
@@ -123,9 +125,20 @@ pub async fn scan(conn: &Connection, os: OsType) -> Result<ScanResult> {
     } else {
         Vec::new()
     };
-    let os = conn.run(&Command::new("sh").args(["-c", OS_RELEASE])).await?;
-    let os_release = parse_os_release(&String::from_utf8_lossy(&os.stdout));
-    Ok(ScanResult { updates, reboot_required, packages, os_release })
+    let autoremove = if os == OsType::Pacman {
+        0
+    } else {
+        let sim = conn.run(&Command::new("env").args(["LC_ALL=C", "apt-get", "-s", "autoremove"])).await?;
+        if sim.success() { count_removals(&String::from_utf8_lossy(&sim.stdout)) } else { 0 }
+    };
+    let release = conn.run(&Command::new("sh").args(["-c", OS_RELEASE])).await?;
+    let os_release = parse_os_release(&String::from_utf8_lossy(&release.stdout));
+    Ok(ScanResult { updates, reboot_required, packages, os_release, autoremove })
+}
+
+/// Counts the packages an `apt-get -s` simulation would remove.
+pub fn count_removals(simulation: &str) -> u32 {
+    simulation.lines().filter(|l| l.starts_with("Remv ")).count() as u32
 }
 
 pub const SUDOERS_PATH: &str = "/etc/sudoers.d/quietkeep";
@@ -133,6 +146,9 @@ pub const SUDOERS_PATH: &str = "/etc/sudoers.d/quietkeep";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Patch,
+    /// Installs updates `apt-get upgrade` keeps back because they need new packages, such as new kernels.
+    Held,
+    Autoremove,
     Reboot,
 }
 
@@ -159,16 +175,21 @@ const PROXMOX_UPGRADE: &[&str] = &[
     "Dpkg::Options::=--force-confold",
     "dist-upgrade",
 ];
+const APT_AUTOREMOVE: &[&str] = &["/usr/bin/env", "DEBIAN_FRONTEND=noninteractive", "/usr/bin/apt-get", "-y", "autoremove"];
 const PACMAN_UPGRADE: &[&str] = &["/usr/bin/pacman", "-Syu", "--noconfirm"];
 const REBOOT: &[&str] = &["/usr/bin/systemctl", "reboot"];
 
 /// The exact root commands an action runs, in order. Each is an argv starting with an absolute path.
+/// Empty when the action does not apply to the OS.
 pub fn privileged_commands(os: OsType, action: Action) -> Vec<&'static [&'static str]> {
     match (action, os) {
         (Action::Reboot, _) => vec![REBOOT],
         (Action::Patch, OsType::Apt | OsType::Kali) => vec![APT_UPDATE, APT_UPGRADE],
         (Action::Patch, OsType::Proxmox) => vec![APT_UPDATE, PROXMOX_UPGRADE],
         (Action::Patch, OsType::Pacman) => vec![PACMAN_UPGRADE],
+        (Action::Held, OsType::Apt | OsType::Kali | OsType::Proxmox) => vec![APT_UPDATE, PROXMOX_UPGRADE],
+        (Action::Autoremove, OsType::Apt | OsType::Kali | OsType::Proxmox) => vec![APT_AUTOREMOVE],
+        (Action::Held | Action::Autoremove, OsType::Pacman) => vec![],
     }
 }
 
@@ -187,15 +208,35 @@ fn sudoers_escape(arg: &str) -> String {
     out
 }
 
+fn sudoers_line(argv: &[&str]) -> String {
+    argv.iter().map(|a| sudoers_escape(a)).collect::<Vec<_>>().join(" ")
+}
+
+/// Commands `sudo -l` lists as runnable as root without a password, as sudoers writes them.
+pub fn nopasswd_commands(listing: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in listing.lines().map(str::trim) {
+        if !(line.starts_with("(root") || line.starts_with("(ALL")) {
+            continue;
+        }
+        let Some(i) = line.find("NOPASSWD:") else { continue };
+        out.extend(line[i + "NOPASSWD:".len()..].split(", ").map(|c| c.trim().to_string()));
+    }
+    out
+}
+
 /// A sudoers drop-in that lets `username` run only QuietKeep's exact commands for this OS,
 /// with no wildcards. `username` must already be validated as a POSIX login name.
 pub fn sudoers_rule(username: &str, os: OsType) -> String {
-    let mut cmds: Vec<String> = privileged_commands(os, Action::Patch)
-        .into_iter()
-        .chain(privileged_commands(os, Action::Reboot))
-        .map(|argv| argv.iter().map(|a| sudoers_escape(a)).collect::<Vec<_>>().join(" "))
-        .collect();
-    cmds.dedup();
+    let mut cmds: Vec<String> = Vec::new();
+    for action in [Action::Patch, Action::Held, Action::Autoremove, Action::Reboot] {
+        for argv in privileged_commands(os, action) {
+            let line = sudoers_line(argv);
+            if !cmds.contains(&line) {
+                cmds.push(line);
+            }
+        }
+    }
     format!(
         "# QuietKeep: allows only these exact commands, nothing else.\n\
          Cmnd_Alias QUIETKEEP = {}\n\
@@ -205,17 +246,20 @@ pub fn sudoers_rule(username: &str, os: OsType) -> String {
 }
 
 /// True when sudo on the host allows every command of the action without a password.
+/// Reads the user's own `sudo -l` listing, because `sudo -l <command>` also succeeds for
+/// commands that are allowed only with a password.
 pub async fn sudo_allowed(conn: &Connection, os: OsType, action: Action, as_root: bool) -> Result<bool> {
     if as_root {
         return Ok(true);
     }
-    for argv in privileged_commands(os, action) {
-        let check = Command::new("sudo").args(["-n", "-l"]).args(argv.iter().copied());
-        if !conn.run(&check).await?.success() {
-            return Ok(false);
-        }
+    let out = conn.run(&Command::new("env").args(["LC_ALL=C", "sudo", "-n", "-l"])).await?;
+    if !out.success() {
+        return Ok(false);
     }
-    Ok(true)
+    let allowed = nopasswd_commands(&String::from_utf8_lossy(&out.stdout));
+    Ok(privileged_commands(os, action)
+        .into_iter()
+        .all(|argv| allowed.iter().any(|a| a == "ALL" || *a == sudoers_line(argv))))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -267,7 +311,31 @@ mod tests {
         assert!(rule.ends_with("keeper ALL=(root) NOPASSWD: QUIETKEEP\n"));
         assert!(!rule.contains('*'));
         assert!(sudoers_rule("root", OsType::Proxmox).contains("dist-upgrade"));
+        assert!(rule.contains("--force-confold dist-upgrade"));
+        assert!(rule.contains("/usr/bin/apt-get -y autoremove"));
+        assert_eq!(rule.matches("apt-get update -qq").count(), 1);
+        assert!(privileged_commands(OsType::Pacman, Action::Held).is_empty());
         assert!(sudoers_rule("arch", OsType::Pacman).contains("/usr/bin/pacman -Syu --noconfirm"));
+    }
+
+    #[test]
+    fn nopasswd_listing_is_exact() {
+        let listing = "User qkpw may run the following commands on box:\n    (ALL : ALL) ALL\n    (root) NOPASSWD: /usr/bin/apt-get update -qq, /usr/bin/env DEBIAN_FRONTEND\\=noninteractive /usr/bin/apt-get -y -o Dpkg\\:\\:Options\\:\\:\\=--force-confdef -o Dpkg\\:\\:Options\\:\\:\\=--force-confold upgrade, /usr/bin/systemctl reboot\n";
+        let allowed = nopasswd_commands(listing);
+        let ok = |a: Action| privileged_commands(OsType::Apt, a).into_iter().all(|argv| allowed.contains(&sudoers_line(argv)));
+        assert!(ok(Action::Patch));
+        assert!(ok(Action::Reboot));
+        assert!(!ok(Action::Held));
+        assert!(!ok(Action::Autoremove));
+        assert_eq!(nopasswd_commands("    (ALL) NOPASSWD: ALL"), vec!["ALL"]);
+        assert!(nopasswd_commands("    (ALL : ALL) ALL").is_empty());
+    }
+
+    #[test]
+    fn removals_are_counted() {
+        let sim = "Reading package lists...\nRemv linux-image-6.8.0-40-generic [6.8.0-40.40]\nRemv libfoo1 [1.0]\n";
+        assert_eq!(count_removals(sim), 2);
+        assert_eq!(count_removals("0 upgraded, 0 newly installed, 0 to remove"), 0);
     }
 
     #[test]

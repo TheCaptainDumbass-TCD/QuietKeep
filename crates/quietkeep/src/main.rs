@@ -136,6 +136,7 @@ fn main() {
             commands::set_scan_interval,
             commands::check_privileged,
             commands::run_action,
+            commands::update_sudoers,
             commands::docker_status,
             commands::scan_docker,
             commands::scan_docker_all,
