@@ -32,7 +32,7 @@ pub fn start(app: AppHandle) {
                 continue;
             }
             let _ = store(&state).set_setting(LAST_AUTO_SCAN_KEY, &now().to_string());
-            let _ = scan_trusted(&app).await;
+            let _ = scan_trusted(&app, true).await;
         }
     });
 }

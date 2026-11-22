@@ -22,6 +22,7 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
     let osv_asking = RwSignal::new(false);
     let osv_busy = RwSignal::new(false);
     let expanded = RwSignal::new(None::<String>);
+    let coverage = RwSignal::new(Vec::<api::HostCoverage>::new());
     let show_cve = move |cve: String| {
         let filter = KevFilter { search: cve.clone(), linux_only: false, ransomware_only: false };
         spawn_local(async move {
@@ -57,6 +58,9 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                     match api::kev_affected().await {
                         Ok(a) => affected.set(a),
                         Err(e) => notice.set(Some(e)),
+                    }
+                    if let Ok(c) = api::kev_coverage().await {
+                        coverage.set(c);
                     }
                 }
                 Err(e) => notice.set(Some(e)),
@@ -176,6 +180,18 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                         on:change=move |ev| show_unchecked.set(event_target_checked(&ev)) />
                     " Show matches without version data"</label>
             </div>
+            {move || coverage.with(|c| (!c.is_empty()).then(|| {
+                let total = c.len();
+                let missing: Vec<String> = c.iter().filter_map(|h| h.reason.as_ref().map(|r| format!("{}: {r}", h.host))).collect();
+                let checked = total - missing.len();
+                let class = if missing.is_empty() { "pill ok" } else { "pill warn" };
+                view! {
+                    <p class="muted" title="Hosts whose installed versions are compared with the fixed versions">
+                        <span class=class>{format!("Version checked on {checked} of {total} hosts")}</span>
+                        {(!missing.is_empty()).then(|| format!(" Not checked: {}", missing.join("; ")))}
+                    </p>
+                }
+            }))}
             <Show when=move || osv_asking.get()>
                 <div class="modal-backdrop">
                     <div class="modal">

@@ -381,6 +381,18 @@ pub struct Affected {
     pub hosts: Vec<HostMatch>,
 }
 
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct HostCoverage {
+    pub host_id: i64,
+    pub host: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+pub async fn kev_coverage() -> Result<Vec<HostCoverage>, String> {
+    invoke("kev_coverage", JsValue::UNDEFINED).await
+}
+
 pub async fn kev_affected() -> Result<Vec<Affected>, String> {
     invoke("kev_affected", JsValue::UNDEFINED).await
 }

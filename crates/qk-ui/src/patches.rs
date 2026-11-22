@@ -52,6 +52,20 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
         })
     };
     load();
+    let tick = RwSignal::new(0u32);
+    let timer = set_interval_with_handle(
+        move || {
+            tick.update(|t| *t = t.wrapping_add(1));
+            load();
+        },
+        std::time::Duration::from_secs(30),
+    )
+    .ok();
+    on_cleanup(move || {
+        if let Some(t) = timer {
+            t.clear();
+        }
+    });
 
     let os_filter = RwSignal::new(String::new());
     let bulk_confirm = RwSignal::new(false);
@@ -310,7 +324,7 @@ pub fn PatchesPanel(refresh: Callback<()>) -> impl IntoView {
                                 } else {
                                     view! { <span class="muted">"No"</span> }.into_any()
                                 }}</td>
-                                <td class="muted">{ago(r.last_scan_at)}</td>
+                                <td class="muted">{let ts = r.last_scan_at; move || { tick.track(); ago(ts) }}</td>
                                 <td>{status}</td>
                                 <td class="actions">
                                     <button class="btn small" disabled=pending == 0 && held == 0

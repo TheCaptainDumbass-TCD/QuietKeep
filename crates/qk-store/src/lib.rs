@@ -26,6 +26,17 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0015_kernel_notes.sql"),
 ];
 
+/// A host's reported release and whether a package list was collected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRelease {
+    pub host_id: i64,
+    pub name: String,
+    pub os_type: String,
+    pub os_id: Option<String>,
+    pub os_version: Option<String>,
+    pub has_packages: bool,
+}
+
 /// What a Proxmox host's kernel changelog says about its running kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelNotes {
@@ -293,6 +304,25 @@ impl Store {
             rusqlite::params![id, running, ubuntu_base, fixed_cves.join(" ")],
         )?;
         Ok(())
+    }
+
+    /// Each host's release and whether it has a package list.
+    pub fn host_releases(&self) -> Result<Vec<HostRelease>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT h.id, h.name, h.os_type, h.os_id, h.os_version, EXISTS (SELECT 1 FROM host_packages p WHERE p.host_id = h.id)
+             FROM hosts h ORDER BY h.name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(HostRelease {
+                host_id: r.get(0)?,
+                name: r.get(1)?,
+                os_type: r.get(2)?,
+                os_id: r.get(3)?,
+                os_version: r.get(4)?,
+                has_packages: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Kernel notes of every host that has them.

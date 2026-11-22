@@ -309,6 +309,50 @@ pub fn affected(
     out
 }
 
+/// A saved host as far as version checks are concerned.
+#[derive(Debug, Clone)]
+pub struct HostInfo {
+    pub host_id: i64,
+    pub host: String,
+    pub proxmox: bool,
+    pub os_id: Option<String>,
+    pub os_version: Option<String>,
+    pub has_packages: bool,
+}
+
+/// Whether a host's packages can be version checked. `reason` says why not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostCoverage {
+    pub host_id: i64,
+    pub host: String,
+    pub reason: Option<String>,
+}
+
+/// Version check coverage of every saved host with the tracker data on hand.
+pub fn coverage(hosts: &[HostInfo], kernels: &[HostKernel], osv: &OsvCache) -> Vec<HostCoverage> {
+    let testing = debian_testing(osv);
+    hosts
+        .iter()
+        .map(|h| {
+            let kernel = kernels.iter().find(|k| k.host_id == h.host_id);
+            let reason = if !h.has_packages {
+                Some("no package list yet, scan it on Patches")
+            } else if h.os_id.is_none() {
+                Some("release not recorded yet, scan it on Patches")
+            } else if ecosystems(h.os_id.as_deref(), h.os_version.as_deref(), testing.as_deref()).is_empty() {
+                Some("no security tracker data for this distribution")
+            } else if h.proxmox && kernel.is_none() {
+                Some("kernel not checked yet, scan it on Patches")
+            } else if h.proxmox && kernel.and_then(|k| k.ubuntu_base.as_deref()).and_then(|b| ubuntu_release(b, osv)).is_none() {
+                Some("no tracker data for the Ubuntu kernel it is built on")
+            } else {
+                None
+            };
+            HostCoverage { host_id: h.host_id, host: h.host.clone(), reason: reason.map(str::to_string) }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +516,33 @@ mod tests {
         assert_eq!((kali.status.as_str(), kali.waiting_on.as_deref()), ("waiting", Some("Kali")));
         let pve = a.hosts.iter().find(|h| h.host_id == 1).unwrap();
         assert_eq!((pve.status.as_str(), pve.waiting_on.as_deref()), ("waiting", Some("Proxmox")));
+    }
+
+    #[test]
+    fn coverage_explains_unchecked_hosts() {
+        let mut osv = OsvCache::default();
+        osv.cves.insert("CVE-1".into(), vec![entry("Debian:13", "linux", None), entry("Ubuntu:26.04:LTS", "linux", Some("7.0.0-45.45"))]);
+        let host = |id: i64, os: Option<&str>, ver: &str, proxmox: bool, has_packages: bool| HostInfo {
+            host_id: id,
+            host: format!("h{id}"),
+            proxmox,
+            os_id: os.map(str::to_string),
+            os_version: Some(ver.into()),
+            has_packages,
+        };
+        let hosts = vec![
+            host(1, Some("debian"), "13", false, true),
+            host(2, Some("arch"), "x", false, true),
+            host(3, Some("debian"), "13", true, true),
+            host(4, Some("debian"), "13", true, true),
+            host(5, None, "", false, false),
+            host(6, Some("kali"), "2026.3", false, true),
+        ];
+        let kernels = vec![HostKernel { host_id: 4, running: "7.0.14-30-pve".into(), ubuntu_base: Some("7.0.0-44.44".into()), fixed_cves: BTreeSet::new() }];
+        let c = coverage(&hosts, &kernels, &osv);
+        let checked: Vec<i64> = c.iter().filter(|h| h.reason.is_none()).map(|h| h.host_id).collect();
+        assert_eq!(checked, vec![1, 4, 6]);
+        assert!(c[2].reason.as_deref().unwrap().starts_with("kernel not checked"));
+        assert!(c[4].reason.as_deref().unwrap().starts_with("no package list"));
     }
 }

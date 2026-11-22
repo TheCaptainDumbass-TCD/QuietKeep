@@ -217,8 +217,15 @@ pub fn pending_updates(state: State<'_, AppState>, id: i64) -> CmdResult<Vec<Pac
 }
 
 /// Read-only scan of one trusted host: pending updates and whether a reboot is needed.
-async fn scan_one(app: &AppHandle, h: Host) -> CmdResult<()> {
+/// Scheduled scans log only when a host's patch state changes, so frequent scans do not
+/// flood the activity log.
+async fn scan_one(app: &AppHandle, h: Host, scheduled: bool) -> CmdResult<()> {
     let state = app.state::<AppState>();
+    let brief = |p: PatchStatus| (p.pending, p.security, p.reboot_required, p.held, p.autoremove, p.scan_error);
+    let snapshot = |state: &State<'_, AppState>| {
+        store(state).patch_status().ok().and_then(|v| v.into_iter().find(|p| p.host_id == h.id)).map(brief)
+    };
+    let before = if scheduled { snapshot(&state) } else { None };
     let Some(fp) = h.host_key.clone() else {
         return Err("Verify this host's key first.".into());
     };
@@ -247,6 +254,11 @@ async fn scan_one(app: &AppHandle, h: Host) -> CmdResult<()> {
             if let Some(k) = &r.kernel_notes {
                 s.record_kernel_notes(h.id, &k.running, k.ubuntu_base.as_deref(), &k.fixed_cves).map_err(err)?;
             }
+            drop(s);
+            if scheduled && before.is_some() && before == snapshot(&state) {
+                return Ok(());
+            }
+            let s = store(&state);
             let reboot = if r.reboot_required { ", reboot required" } else { "" };
             s.log_activity(
                 "scan.completed",
@@ -261,8 +273,12 @@ async fn scan_one(app: &AppHandle, h: Host) -> CmdResult<()> {
                 SshError::AuthFailed(user) => format!("Login as {user} was refused. Install QuietKeep's access key."),
                 other => other.to_string(),
             };
+            let repeat = before.as_ref().is_some_and(|b| b.5.as_deref() == Some(msg.as_str()));
             let mut s = store(&state);
             s.record_scan_error(h.id, &msg).map_err(err)?;
+            if repeat {
+                return Err(msg);
+            }
             s.log_activity("scan.failed", Some(h.id), &format!("Scan of {} failed: {msg}", h.spec.name))
                 .map_err(err)?;
             Err(msg)
@@ -276,7 +292,7 @@ pub async fn scan_host(app: AppHandle, id: i64) -> CmdResult<bool> {
         .get_host(id)
         .map_err(err)?
         .ok_or_else(|| "Host not found.".to_string())?;
-    scan_one(&app, h).await.map(|_| true)
+    scan_one(&app, h, false).await.map(|_| true)
 }
 
 #[derive(Serialize)]
@@ -287,14 +303,14 @@ pub struct ScanSummary {
 }
 
 /// Scans every host whose key the user has trusted. Hosts without a trusted key are skipped.
-pub async fn scan_trusted(app: &AppHandle) -> CmdResult<ScanSummary> {
+pub async fn scan_trusted(app: &AppHandle, scheduled: bool) -> CmdResult<ScanSummary> {
     let hosts = store(&app.state::<AppState>()).list_hosts().map_err(err)?;
     let (trusted, untrusted): (Vec<Host>, Vec<Host>) = hosts.into_iter().partition(|h| h.host_key.is_some());
     let tasks: Vec<_> = trusted
         .into_iter()
         .map(|h| {
             let app = app.clone();
-            tauri::async_runtime::spawn(async move { scan_one(&app, h).await.is_ok() })
+            tauri::async_runtime::spawn(async move { scan_one(&app, h, scheduled).await.is_ok() })
         })
         .collect();
     let mut summary = ScanSummary { scanned: 0, failed: 0, skipped: untrusted.len() as u32 };
@@ -311,11 +327,11 @@ pub async fn scan_trusted(app: &AppHandle) -> CmdResult<ScanSummary> {
 
 #[tauri::command]
 pub async fn scan_all(app: AppHandle) -> CmdResult<ScanSummary> {
-    scan_trusted(&app).await
+    scan_trusted(&app, false).await
 }
 
 pub const SCAN_INTERVAL_KEY: &str = "scan.interval_minutes";
-pub const SCAN_INTERVALS: [u32; 5] = [0, 60, 360, 720, 1440];
+pub const SCAN_INTERVALS: [u32; 8] = [0, 5, 15, 30, 60, 360, 720, 1440];
 
 pub fn scan_interval(state: &State<'_, AppState>) -> u32 {
     store(state)
@@ -343,6 +359,7 @@ pub fn set_scan_interval(state: State<'_, AppState>, minutes: u32) -> CmdResult<
     let msg = match minutes {
         0 => "Turned off scheduled scans".to_string(),
         60 => "Scheduled scans every hour".to_string(),
+        m if m < 60 => format!("Scheduled scans every {m} minutes"),
         m => format!("Scheduled scans every {} hours", m / 60),
     };
     s.log_activity("settings.scan_interval", None, &msg).map_err(err)?;
@@ -436,7 +453,7 @@ pub async fn run_action(app: AppHandle, id: i64, action: String) -> CmdResult<St
         }
         (_, Ok(report)) if report.success => {
             store(&state).log_activity("patch.completed", Some(id), &format!("{done} on {name}")).map_err(err)?;
-            let _ = scan_one(&app, h).await;
+            let _ = scan_one(&app, h, false).await;
             update_tray(&app);
             Ok(format!("{done} on {name}."))
         }
@@ -827,6 +844,41 @@ pub fn kev_affected(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec
         .collect();
     let osv = qk_intel::osv::load_cache(&osv_cache(&app)?).map_err(err)?;
     Ok(qk_intel::affected::affected(&catalog, &packages, &images, &pending, &kernels, osv.as_ref()))
+}
+
+/// Which saved hosts can be version checked with the fixed version data on hand. Empty
+/// until fixed versions have been checked.
+#[tauri::command]
+pub fn kev_coverage(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<qk_intel::affected::HostCoverage>> {
+    let Some(osv) = qk_intel::osv::load_cache(&osv_cache(&app)?).map_err(err)? else {
+        return Ok(Vec::new());
+    };
+    let s = store(&state);
+    let hosts: Vec<qk_intel::affected::HostInfo> = s
+        .host_releases()
+        .map_err(err)?
+        .into_iter()
+        .map(|h| qk_intel::affected::HostInfo {
+            host_id: h.host_id,
+            host: h.name,
+            proxmox: h.os_type == "proxmox",
+            os_id: h.os_id,
+            os_version: h.os_version,
+            has_packages: h.has_packages,
+        })
+        .collect();
+    let kernels: Vec<qk_intel::affected::HostKernel> = s
+        .kernel_notes()
+        .map_err(err)?
+        .into_iter()
+        .map(|k| qk_intel::affected::HostKernel {
+            host_id: k.host_id,
+            running: k.running,
+            ubuntu_base: k.ubuntu_base,
+            fixed_cves: k.fixed_cves.into_iter().collect(),
+        })
+        .collect();
+    Ok(qk_intel::affected::coverage(&hosts, &kernels, &osv))
 }
 
 const OSV_ALLOWED_KEY: &str = "osv.allowed";

@@ -2,6 +2,13 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.15.0
+
+- Security: a "Version checked on N of N hosts" line shows how many saved hosts are compared with the fixed versions and says why any host is not
+- Patches: Last scan now counts up while the page is open, and the page reloads its data every 30 seconds without contacting any host
+- Settings: scheduled scans can run every 5, 15 or 30 minutes. Scans stay read only and only read each host's local package state
+- Scheduled scans add to the activity log only when a host's updates, reboot state or scan error change
+
 ## 0.14.0
 
 - Security: Kali hosts are now version checked against Debian testing and Parrot 7 hosts against Debian 13, with Debian testing as a fallback for newer Parrot kernels

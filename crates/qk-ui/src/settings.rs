@@ -3,8 +3,11 @@ use leptos::task::spawn_local;
 
 use crate::{api, tauri};
 
-const INTERVALS: [(u32, &str); 5] = [
+const INTERVALS: [(u32, &str); 8] = [
     (0, "Off"),
+    (5, "Every 5 minutes"),
+    (15, "Every 15 minutes"),
+    (30, "Every 30 minutes"),
     (60, "Every hour"),
     (360, "Every 6 hours"),
     (720, "Every 12 hours"),

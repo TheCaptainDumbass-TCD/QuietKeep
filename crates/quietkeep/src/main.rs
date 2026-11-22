@@ -36,7 +36,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "scan" => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = commands::scan_trusted(&app).await;
+                    let _ = commands::scan_trusted(&app, false).await;
                 });
             }
             "quit" => app.exit(0),
@@ -156,6 +156,7 @@ fn main() {
             commands::docker_remove_rollback,
             commands::docker_snooze_major,
             commands::kev_affected,
+            commands::kev_coverage,
             commands::osv_state,
             commands::osv_set_allowed,
             commands::osv_refresh,
