@@ -2,6 +2,14 @@
 
 QuietKeep follows semantic versioning. Versions below 1.0.0 are pre-release builds of the Rust rewrite.
 
+## 0.14.0
+
+- Security: Kali hosts are now version checked against Debian testing and Parrot 7 hosts against Debian 13, with Debian testing as a fallback for newer Parrot kernels
+- Security: Proxmox VE and Proxmox Backup Server kernels are now version checked. Scans read the running kernel's changelog without sudo. A CVE the changelog names counts as fixed. Otherwise the Ubuntu kernel it is built on is compared with Ubuntu's fix
+- Security: only the running Proxmox kernel is checked. Older installed kernels are cleanup for Autoremove, not exposure
+- Security: when upstream has a fix that Kali, Parrot or Proxmox does not offer yet, the host shows "Waiting on Kali", "Waiting on Parrot" or "Waiting on Proxmox" instead of Patch
+- Click Scan trusted hosts once after upgrading so Proxmox hosts record their kernel changelog
+
 ## 0.13.1
 
 - Fix: on hosts that use sudo-rs, such as Ubuntu 26.04, QuietKeep did not recognize its own sudoers rule and kept asking to install it

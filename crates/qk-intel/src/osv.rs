@@ -165,17 +165,66 @@ pub fn load_cache(path: &Path) -> Result<Option<OsvCache>> {
     }
 }
 
-/// The tracker ecosystems that apply to a host's /etc/os-release `ID` and `VERSION_ID`.
-pub fn ecosystems(os_id: Option<&str>, os_version: Option<&str>) -> Vec<String> {
+/// The tracker ecosystems that apply to a host's /etc/os-release `ID` and `VERSION_ID`, in
+/// priority order. Kali rolling follows Debian testing. Parrot is built on Debian stable,
+/// with Debian testing as a fallback for its newer kernels. `testing` comes from
+/// [`debian_testing`].
+pub fn ecosystems(os_id: Option<&str>, os_version: Option<&str>, testing: Option<&str>) -> Vec<String> {
     let v = os_version.unwrap_or("").trim();
     if v.is_empty() {
         return Vec::new();
     }
+    let major = v.split('.').next().unwrap_or(v);
+    let testing = testing.map(str::to_string);
     match os_id {
-        Some("debian") => vec![format!("Debian:{}", v.split('.').next().unwrap_or(v))],
+        Some("debian") => vec![format!("Debian:{major}")],
         Some("ubuntu") => vec![format!("Ubuntu:{v}:LTS"), format!("Ubuntu:{v}")],
+        Some("kali") => testing.into_iter().collect(),
+        Some("parrot") => {
+            let stable = match major {
+                "5" => Some("Debian:11"),
+                "6" => Some("Debian:12"),
+                "7" => Some("Debian:13"),
+                _ => None,
+            };
+            stable.map(str::to_string).into_iter().chain(testing).collect()
+        }
         _ => Vec::new(),
     }
+}
+
+/// Debian testing, the highest numbered Debian release in the tracker data.
+pub fn debian_testing(osv: &OsvCache) -> Option<String> {
+    osv.cves
+        .values()
+        .flatten()
+        .filter_map(|e| e.ecosystem.strip_prefix("Debian:")?.parse::<u32>().ok())
+        .max()
+        .map(|n| format!("Debian:{n}"))
+}
+
+const UBUNTU_KERNELS: &[(&str, &str)] =
+    &[("6.8.0", "Ubuntu:24.04:LTS"), ("6.14.0", "Ubuntu:25.04"), ("6.17.0", "Ubuntu:25.10"), ("7.0.0", "Ubuntu:26.04:LTS")];
+
+/// The Ubuntu release whose `linux` package a Proxmox kernel is built on, such as
+/// `Ubuntu:26.04:LTS` for `7.0.0-44.44`. `None` when the tracker data has no such release,
+/// for example after it reached end of life.
+pub fn ubuntu_release(base: &str, osv: &OsvCache) -> Option<String> {
+    let upstream = base.split('-').next()?;
+    let prefix = format!("{upstream}-");
+    let entries = || osv.cves.values().flatten();
+    let general = |eco: &str| eco.starts_with("Ubuntu:") && !eco.starts_with("Ubuntu:Pro:") && eco.matches(':').count() <= 2;
+    let mut found: Vec<&str> = entries()
+        .filter(|e| e.package == "linux" && general(&e.ecosystem) && e.fixed.as_deref().is_some_and(|f| f.starts_with(&prefix)))
+        .map(|e| e.ecosystem.as_str())
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    if let [eco] = found.as_slice() {
+        return Some(eco.to_string());
+    }
+    let (_, eco) = UBUNTU_KERNELS.iter().find(|(u, _)| *u == upstream)?;
+    entries().any(|e| e.ecosystem == *eco).then(|| eco.to_string())
 }
 
 #[cfg(test)]
@@ -194,9 +243,25 @@ mod tests {
         assert_eq!(e[1].fixed, None);
         assert_eq!(e[0].urgency.as_deref(), Some("unimportant"));
         assert_eq!(e[1].urgency, None);
-        assert_eq!(ecosystems(Some("debian"), Some("13")), vec!["Debian:13"]);
-        assert_eq!(ecosystems(Some("ubuntu"), Some("22.04"))[0], "Ubuntu:22.04:LTS");
-        assert!(ecosystems(Some("kali"), Some("2026.3")).is_empty());
+        assert_eq!(ecosystems(Some("debian"), Some("13"), None), vec!["Debian:13"]);
+        assert_eq!(ecosystems(Some("ubuntu"), Some("22.04"), None)[0], "Ubuntu:22.04:LTS");
+        assert!(ecosystems(Some("kali"), Some("2026.3"), None).is_empty());
+        assert_eq!(ecosystems(Some("kali"), Some("2026.3"), Some("Debian:14")), vec!["Debian:14"]);
+        assert_eq!(ecosystems(Some("parrot"), Some("7.4"), Some("Debian:14")), vec!["Debian:13", "Debian:14"]);
+        assert!(ecosystems(Some("arch"), Some("x"), Some("Debian:14")).is_empty());
         assert!(!valid_cve_id("CVE-2024-1/../x"));
+    }
+
+    #[test]
+    fn testing_and_ubuntu_kernel_releases() {
+        let e = |eco: &str, fixed: Option<&str>| OsvEntry { ecosystem: eco.into(), package: "linux".into(), fixed: fixed.map(str::to_string), urgency: None };
+        let mut c = OsvCache::default();
+        c.cves.insert("CVE-1".into(), vec![e("Debian:13", Some("6.12.1-1")), e("Debian:14", None), e("Ubuntu:26.04:LTS", Some("7.0.0-45.45"))]);
+        c.cves.insert("CVE-2".into(), vec![e("Ubuntu:24.04:LTS", Some("6.8.0-90.91")), e("Ubuntu:Nvidia-BlueField:24.04:LTS", Some("7.0.0-1.1"))]);
+        assert_eq!(debian_testing(&c).as_deref(), Some("Debian:14"));
+        assert_eq!(ubuntu_release("7.0.0-44.44", &c).as_deref(), Some("Ubuntu:26.04:LTS"));
+        assert_eq!(ubuntu_release("6.8.0-60.63", &c).as_deref(), Some("Ubuntu:24.04:LTS"));
+        assert_eq!(ubuntu_release("6.17.0-8.8", &c), None);
+        assert_eq!(ubuntu_release("5.0.0-1.1", &c), None);
     }
 }

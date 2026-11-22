@@ -16,6 +16,67 @@ pub struct ScanResult {
     pub os_release: Option<(String, String)>,
     /// Packages `apt-get autoremove` would remove.
     pub autoremove: u32,
+    /// Proxmox only: what the running kernel's changelog says.
+    pub kernel_notes: Option<KernelNotes>,
+}
+
+/// What a Proxmox kernel's changelog says about the running kernel.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+pub struct KernelNotes {
+    /// `uname -r`, such as `7.0.14-30-pve`.
+    pub running: String,
+    /// The Ubuntu kernel it is built on, such as `7.0.0-44.44`.
+    pub ubuntu_base: Option<String>,
+    /// CVEs the changelog names, sorted.
+    pub fixed_cves: Vec<String>,
+}
+
+fn is_cve_id(w: &str) -> bool {
+    let mut parts = w.split('-');
+    let (Some("CVE"), Some(year), Some(num), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    year.len() == 4 && (4..=8).contains(&num.len()) && year.bytes().chain(num.bytes()).all(|b| b.is_ascii_digit())
+}
+
+/// Reads the Ubuntu base kernel and the CVEs from a Proxmox kernel changelog. The newest
+/// entry comes first, so the first `Ubuntu-` reference is the current base.
+pub fn parse_kernel_changelog(text: &str) -> (Option<String>, Vec<String>) {
+    let base = text.split("Ubuntu-").skip(1).find_map(|rest| {
+        let v: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '~'))
+            .collect();
+        let v = v.trim_end_matches(['.', '-']);
+        (v.starts_with(|c: char| c.is_ascii_digit()) && v.contains('-') && v.len() <= 40).then(|| v.to_string())
+    });
+    let mut cves: Vec<String> = text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|w| is_cve_id(w))
+        .map(str::to_string)
+        .collect();
+    cves.sort_unstable();
+    cves.dedup();
+    cves.truncate(20_000);
+    (base, cves)
+}
+
+/// Reads the running kernel's changelog on a Proxmox host. Read only, no sudo.
+async fn kernel_notes(conn: &Connection) -> Result<Option<KernelNotes>> {
+    let out = conn.run(&Command::new("uname").arg("-r")).await?;
+    let running = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let safe = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_');
+    if running.is_empty() || running.len() > 64 || !running.chars().all(safe) {
+        return Ok(None);
+    }
+    let docs = [
+        format!("/usr/share/doc/proxmox-kernel-{running}-signed/changelog.gz"),
+        format!("/usr/share/doc/proxmox-kernel-{running}/changelog.gz"),
+        format!("/usr/share/doc/pve-kernel-{running}/changelog.gz"),
+    ];
+    let log = conn.run(&Command::new("zcat").arg("-qf").args(&docs)).await?;
+    let (ubuntu_base, fixed_cves) = parse_kernel_changelog(&String::from_utf8_lossy(&log.stdout));
+    Ok(Some(KernelNotes { running, ubuntu_base, fixed_cves }))
 }
 
 const OS_RELEASE: &str = r#". /etc/os-release 2>/dev/null; echo "$ID $VERSION_ID""#;
@@ -169,12 +230,14 @@ pub async fn scan(conn: &Connection, os: OsType) -> Result<ScanResult> {
         .run(&Command::new("sh").args(["-c", OS_RELEASE]))
         .await?;
     let os_release = parse_os_release(&String::from_utf8_lossy(&release.stdout));
+    let kernel_notes = if os == OsType::Proxmox { kernel_notes(conn).await? } else { None };
     Ok(ScanResult {
         updates,
         reboot_required,
         packages,
         os_release,
         autoremove,
+        kernel_notes,
     })
 }
 
@@ -408,6 +471,15 @@ pub(crate) fn tail(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_proxmox_kernel_changelog() {
+        let text = "proxmox-kernel-signed-7.0 (7.0.14+30) trixie; urgency=medium\n\n  * update sources to Ubuntu-7.0.0-44.44.\n  * fix CVE-2026-31431, CVE-2025-1234 and (CVE-2026-31431)\n  * not CVE-26-1 or CVE-2026-12a\n\n -- Proxmox Support Team\n\nproxmox-kernel-signed-7.0 (7.0.14+29) trixie\n  * update sources to Ubuntu-7.0.0-43.43\n";
+        let (base, cves) = parse_kernel_changelog(text);
+        assert_eq!(base.as_deref(), Some("7.0.0-44.44"));
+        assert_eq!(cves, vec!["CVE-2025-1234", "CVE-2026-31431"]);
+        assert_eq!(parse_kernel_changelog("Ubuntu-focal and nothing"), (None, vec![]));
+    }
 
     #[test]
     fn sudoers_rule_is_exact() {

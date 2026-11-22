@@ -244,6 +244,9 @@ async fn scan_one(app: &AppHandle, h: Host) -> CmdResult<()> {
             if let Some((os_id, os_version)) = &r.os_release {
                 s.record_os_release(h.id, os_id, os_version).map_err(err)?;
             }
+            if let Some(k) = &r.kernel_notes {
+                s.record_kernel_notes(h.id, &k.running, k.ubuntu_base.as_deref(), &k.fixed_cves).map_err(err)?;
+            }
             let reboot = if r.reboot_required { ", reboot required" } else { "" };
             s.log_activity(
                 "scan.completed",
@@ -811,8 +814,19 @@ pub fn kev_affected(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec
         })
         .collect();
     let pending = s.pending_packages().map_err(err)?;
+    let kernels: Vec<qk_intel::affected::HostKernel> = s
+        .kernel_notes()
+        .map_err(err)?
+        .into_iter()
+        .map(|k| qk_intel::affected::HostKernel {
+            host_id: k.host_id,
+            running: k.running,
+            ubuntu_base: k.ubuntu_base,
+            fixed_cves: k.fixed_cves.into_iter().collect(),
+        })
+        .collect();
     let osv = qk_intel::osv::load_cache(&osv_cache(&app)?).map_err(err)?;
-    Ok(qk_intel::affected::affected(&catalog, &packages, &images, &pending, osv.as_ref()))
+    Ok(qk_intel::affected::affected(&catalog, &packages, &images, &pending, &kernels, osv.as_ref()))
 }
 
 const OSV_ALLOWED_KEY: &str = "osv.allowed";

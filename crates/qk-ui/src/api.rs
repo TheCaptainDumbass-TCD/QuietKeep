@@ -343,6 +343,8 @@ pub struct HostMatch {
     pub status: String,
     #[serde(default)]
     pub fixed_version: Option<String>,
+    #[serde(default)]
+    pub waiting_on: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

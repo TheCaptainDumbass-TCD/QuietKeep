@@ -23,7 +23,17 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0012_packages.sql"),
     include_str!("migrations/0013_sources.sql"),
     include_str!("migrations/0014_autoremove.sql"),
+    include_str!("migrations/0015_kernel_notes.sql"),
 ];
+
+/// What a Proxmox host's kernel changelog says about its running kernel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelNotes {
+    pub host_id: i64,
+    pub running: String,
+    pub ubuntu_base: Option<String>,
+    pub fixed_cves: Vec<String>,
+}
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -274,6 +284,32 @@ impl Store {
             rusqlite::params![id, os_id, os_version],
         )?;
         Ok(())
+    }
+
+    /// Records what a Proxmox kernel changelog says about the running kernel.
+    pub fn record_kernel_notes(&mut self, id: i64, running: &str, ubuntu_base: Option<&str>, fixed_cves: &[String]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE hosts SET kernel_running = ?2, kernel_base = ?3, kernel_cves = ?4 WHERE id = ?1",
+            rusqlite::params![id, running, ubuntu_base, fixed_cves.join(" ")],
+        )?;
+        Ok(())
+    }
+
+    /// Kernel notes of every host that has them.
+    pub fn kernel_notes(&self) -> Result<Vec<KernelNotes>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kernel_running, kernel_base, COALESCE(kernel_cves, '') FROM hosts WHERE kernel_running IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let cves: String = r.get(3)?;
+            Ok(KernelNotes {
+                host_id: r.get(0)?,
+                running: r.get(1)?,
+                ubuntu_base: r.get(2)?,
+                fixed_cves: cves.split_whitespace().map(str::to_string).collect(),
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// Installed packages of every saved host.

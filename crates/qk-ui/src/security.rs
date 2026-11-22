@@ -171,7 +171,7 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                     None => "Fixed versions not checked yet, so every match is shown.".to_string(),
                 })}</span>
                 <span class="spacer"></span>
-                <label title="Hosts QuietKeep cannot version check, such as Kali, Arch, Proxmox kernels and container images">
+                <label title="Hosts QuietKeep cannot version check yet, such as Arch hosts and container images">
                     <input type="checkbox" prop:checked=move || show_unchecked.get()
                         on:change=move |ev| show_unchecked.set(event_target_checked(&ev)) />
                     " Show matches without version data"</label>
@@ -239,7 +239,11 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                                         ids.dedup();
                                         ids.len()
                                     };
-                                    let (patch, nofix, unchecked, minor) = (host_status("patch"), host_status("nofix"), host_status("unchecked"), host_status("minor"));
+                                    let (patch, waiting, nofix, unchecked, minor) = (host_status("patch"), host_status("waiting"), host_status("nofix"), host_status("unchecked"), host_status("minor"));
+                                    let mut waiting_on: Vec<String> = cves.iter().flat_map(|a| a.hosts.iter()).filter_map(|h| h.waiting_on.clone()).collect();
+                                    waiting_on.sort();
+                                    waiting_on.dedup();
+                                    let waiting_on = waiting_on.join(" and ");
                                     let mut patch_ids: Vec<i64> = cves.iter().flat_map(|a| a.hosts.iter()).filter(|h| h.status == "patch").map(|h| h.host_id).collect();
                                     patch_ids.sort_unstable();
                                     patch_ids.dedup();
@@ -254,6 +258,7 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                                             <td title=detail>{names}</td>
                                             <td>
                                                 {(patch > 0).then(|| view! { <span class="pill warn" title="The installed version is older than the fixed version. Patch these hosts.">{format!("Patch {patch} hosts")}</span> })}
+                                                {(waiting > 0).then(|| view! { <span class="pill held" title="Upstream has released a fix, but this distribution does not offer it to these hosts yet. Scan again later and patch when the update arrives.">{format!("Waiting on {waiting_on} for {waiting}")}</span> })}
                                                 {(nofix > 0).then(|| view! { <span class="pill bad" title="The tracker lists the package as affected and no fix is released yet">{format!("No fix yet on {nofix}")}</span> })}
                                                 {(unchecked > 0).then(|| view! { <span class="pill held" title="No tracker data for these hosts, so only the product is known to be installed">{format!("Not version checked on {unchecked}")}</span> })}
                                                 {(minor > 0).then(|| view! { <span class="pill held" title="The distribution rates this unimportant, usually because its build cannot be exploited. Open the Debian or Ubuntu tracker from the CVE details to read why.">{format!("Rated unimportant on {minor}")}</span> })}
@@ -280,6 +285,7 @@ pub fn SecurityPanel(refresh: Callback<()>) -> impl IntoView {
                                                 let cve = a.cve_id.clone();
                                                 let per_host = a.hosts.iter().map(|h| match (h.status.as_str(), &h.fixed_version) {
                                                     ("patch", Some(f)) => format!("{}: {} {}, fixed in {f}{}", h.host, h.source, h.version, if h.update_pending { ", update ready" } else { "" }),
+                                                    ("waiting", Some(f)) => format!("{}: {} {}, fixed upstream in {f}, waiting on {}", h.host, h.source, h.version, h.waiting_on.as_deref().unwrap_or("the distribution")),
                                                     ("nofix", _) => format!("{}: {} {}, no fix yet", h.host, h.source, h.version),
                                                     ("minor", _) => format!("{}: {} {}, rated unimportant by the distribution", h.host, h.source, h.version),
                                                     _ => format!("{}: {} {}, not version checked", h.host, h.source, h.version),
