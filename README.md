@@ -4,7 +4,9 @@ Standalone desktop app for Debian 13 and Ubuntu that keeps a small to medium hom
 
 ## Status
 
-Early development (0.8.x). QuietKeep is agentless and uses SSH. An optional host agent is planned. Version 1.0.0 will be the first public release.
+**Alpha: work in progress.** No packages yet. Features and screens will change. Build from source to try it.
+
+The current version is 0.15.0. QuietKeep is agentless and uses SSH. An optional host agent is planned. Version 1.0.0 will be the first release with packages.
 
 ## Features
 
@@ -17,9 +19,38 @@ Early development (0.8.x). QuietKeep is agentless and uses SSH. An optional host
 - Confirmed patching and rebooting through an exact command sudoers rule
 - Docker inventory with release tracking, pin moves, `.env` tag updates, moving `docker run` containers to compose and confirmed compose updates
 - CISA KEV catalog with offline search, downloaded only after you allow it
+- Fixed version checks from OSV for Debian, Ubuntu, Kali, Parrot and Proxmox hosts
 - Scheduled background scans from the tray, off by default
 - Panels you can hide and reorder
 - System, light and dark themes
+
+## Screenshots
+
+Work in progress: screens will change before 1.0.0. The hosts and addresses below are made up examples.
+
+**Dashboard:** host counts, recent activity and 24 hour telemetry for every trusted host.
+
+![Dashboard](docs/screenshots/01-dashboard.png)
+
+**Hosts:** pinned host keys, Set up access and CSV import and export.
+
+![Hosts](docs/screenshots/02-hosts.png)
+
+**Patches:** pending and security updates, reboot state and confirmed patching.
+
+![Patches](docs/screenshots/03-patches.png)
+
+**Docker:** containers by compose project with release tracking.
+
+![Docker](docs/screenshots/04-docker.png)
+
+**Settings:** scheduled scans and panels you can hide and reorder.
+
+![Settings](docs/screenshots/05-settings.png)
+
+**Dark mode:** system, light or dark.
+
+![Dark mode](docs/screenshots/06-dark.png)
 
 ## Security model
 
@@ -29,14 +60,6 @@ Early development (0.8.x). QuietKeep is agentless and uses SSH. An optional host
 - QuietKeep's private key is encrypted, and its passphrase is kept in the desktop keyring (GNOME Keyring or KWallet).
 - Scans never use sudo. Patching and rebooting run only the commands listed in `/etc/sudoers.d/quietkeep`. Set up access can install that rule with a sudo password you type once. QuietKeep never stores passwords.
 - Every patch, reboot, container update and download asks for confirmation first. Registry checks for Docker images run only after you allow them.
-
-## Install
-
-```sh
-sudo apt install ./quietkeep_0.8.1_amd64.deb
-```
-
-Tested on clean Debian 13 and Ubuntu 24.04 systems. Removing the package with `sudo apt remove quietkeep` leaves your data in place.
 
 ## Data
 
@@ -48,18 +71,20 @@ All data lives in `~/.local/share/dev.quietwire.quietkeep` with owner only permi
 | `identity_ed25519` | QuietKeep's private SSH key |
 | `cisa_kev.json` | Cached CISA KEV catalog |
 
-The package never touches this folder. Delete it yourself to remove all QuietKeep data.
+Delete this folder to remove all QuietKeep data.
 
-## Build
+## Build from source
 
 Requirements: Rust stable, the `wasm32-unknown-unknown` target, `trunk`, `tauri-cli` 2 and the Tauri Linux dependencies (WebKitGTK 4.1, GTK 3, Ayatana AppIndicator, librsvg).
 
 ```sh
 cargo test --workspace --exclude qk-ui
-cd crates/quietkeep && cargo tauri build
+cd crates/quietkeep && cargo tauri dev
 ```
 
-The package is written to `target/release/bundle/deb/`.
+`cargo tauri build` also makes a `.deb` in `target/release/bundle/deb/`. It is for your own testing only while QuietKeep is in alpha.
+
+See `CONTRIBUTING.md` for the project rules.
 
 ## Layout
 
@@ -69,21 +94,11 @@ The package is written to `target/release/bundle/deb/`.
 | `qk-store` | Local SQLite storage and migrations |
 | `qk-ssh` | SSH transport with host key pinning |
 | `qk-collect` | Package and Docker collectors, patch and reboot actions |
-| `qk-intel` | CISA KEV catalog |
+| `qk-intel` | CISA KEV catalog, OSV fixed versions and host matching |
 | `qk-jobs` | Job runner (planned) |
 | `qk-auth` | Desktop keyring storage for the SSH key passphrase |
 | `quietkeep` | Tauri 2 desktop shell, tray and scheduler |
 | `qk-ui` | Rust/WebAssembly user interface (Leptos) |
-
-## Upgrading
-
-Install the newer package the same way. apt sees that `quietkeep` is already installed and upgrades it in place, so there is no need to remove the old version first. Hosts, trusted keys and settings are kept.
-
-```sh
-sudo apt install ./quietkeep_0.8.1_amd64.deb
-```
-
-If QuietKeep is running in the tray during the upgrade, it shows a "QuietKeep was updated" banner. Click Restart to switch to the new version, or choose Quit from the tray menu and start it again.
 
 ## License
 
