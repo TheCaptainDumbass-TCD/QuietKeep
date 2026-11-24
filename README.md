@@ -57,7 +57,8 @@ Work in progress: screens will change before 1.0.0. The hosts and addresses belo
 - QuietKeep opens no listening port. It only connects out to hosts you add.
 - It never trusts a host key on its own. You approve each fingerprint, and a changed key blocks the connection.
 - It uses its own SSH key for all normal work. Set up access logs in once with your own key through ssh-agent and installs QuietKeep's key. Your private keys never leave the agent.
-- QuietKeep's private key is encrypted, and its passphrase is kept in the desktop keyring (GNOME Keyring or KWallet).
+- Every install makes its own SSH key. On first start QuietKeep generates a new random ed25519 key for your user account. No key ships in the source code or in any package, and no two installs share one. Only the public half is copied to your hosts.
+- QuietKeep's private key is encrypted with a random passphrase, also made on first start, and that passphrase is kept in the desktop keyring (GNOME Keyring or KWallet). If no keyring is available, the key is saved unencrypted with owner only permissions and Settings says so.
 - Scans never use sudo. Patching and rebooting run only the commands listed in `/etc/sudoers.d/quietkeep`. Set up access can install that rule with a sudo password you type once. QuietKeep never stores passwords.
 - Every patch, reboot, container update and download asks for confirmation first. Registry checks for Docker images run only after you allow them.
 
@@ -68,7 +69,7 @@ All data lives in `~/.local/share/dev.quietwire.quietkeep` with owner only permi
 | File | Contents |
 |---|---|
 | `quietkeep.db` | Hosts, scan results, settings and activity log (SQLite) |
-| `identity_ed25519` | QuietKeep's private SSH key |
+| `identity_ed25519` | QuietKeep's private SSH key, made on first start for this install |
 | `cisa_kev.json` | Cached CISA KEV catalog |
 
 Delete this folder to remove all QuietKeep data.
