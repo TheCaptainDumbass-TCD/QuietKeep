@@ -6,7 +6,7 @@ Standalone desktop app for Debian 13 and Ubuntu that keeps a small to medium hom
 
 **Alpha: work in progress.** No packages yet. Features and screens will change. Build from source to try it.
 
-The current version is 0.15.0. QuietKeep is agentless and uses SSH. An optional host agent is planned. Version 1.0.0 will be the first release with packages.
+The current version is 0.15.0. QuietKeep is agentless and uses SSH. An optional host agent is planned. Version 1.0.0 will be the first release with packages. It runs on Debian and Ubuntu today. Windows is planned, because many Windows admins also run Linux servers.
 
 ## Features
 
